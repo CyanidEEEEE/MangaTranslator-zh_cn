@@ -225,6 +225,9 @@ def process_batch_logic(
     output_base_dir: Path = Path("./output"),
     gradio_progress: Any = None,
     cancellation_manager: Optional["CancellationManager"] = None,
+    batch_workflow_mode: str = "Standard (Page-by-page)",   
+    batch_script_upload: Optional[str] = None,
+    batch_json_upload: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Processes a batch of manga images. Handles core validation, calls the core batch pipeline,
@@ -261,6 +264,11 @@ def process_batch_logic(
         Exception: For unexpected errors during processing.
     """
     start_time = time.time()
+    
+    if batch_workflow_mode in ["Advanced (Export Script Only)", "Advanced (Import Translated Script & Render)"]:
+        config.translation.provider = "OpenAI-Compatible"
+        config.translation.model_name = "bypass-model"
+        config.translation.openai_compatible_url = "http://bypass.local"
 
     try:
         # Create temporary config for validation since we only have the font pack name
@@ -425,14 +433,58 @@ def process_batch_logic(
         if not process_dir:
             raise LogicError("Could not determine processing directory.")
 
-        results = batch_translate_images(
-            input_dir=process_dir,
-            config=config,
-            output_dir=batch_output_path,
-            progress_callback=_batch_progress_callback,
-            preserve_structure=preserve_structure,
-            cancellation_manager=cancellation_manager,
-        )
+        # =========================================================================
+        # 核心分流逻辑：根据 UI 选择的 batch_workflow_mode 决定执行哪套管线
+        # =========================================================================
+        if batch_workflow_mode == "Standard (Page-by-page)":
+            # 兼容原版的逐页翻译模式
+            results = batch_translate_images(
+                input_dir=process_dir,
+                config=config,
+                output_dir=batch_output_path,
+                progress_callback=_batch_progress_callback,
+                preserve_structure=preserve_structure,
+                cancellation_manager=cancellation_manager,
+            )
+        else:
+            # 激活高级两遍处理管线 (Two-Pass Architecture)
+            from core.pipeline import run_advanced_batch_pipeline
+            
+            mode_mapping = {
+                "Advanced (Auto API - Whole Chapter)": "auto_api_full",
+                "Advanced (Export Script Only)": "export_only",
+                "Advanced (Import Translated Script & Render)": "import_render"
+            }
+            pipeline_mode = mode_mapping.get(batch_workflow_mode, "auto_api_full")
+            
+            # 如果是外部导入翻译文本模式，复制用户上传的文件到输出目录
+            if pipeline_mode == "import_render":
+                if not batch_script_upload:
+                    raise ValidationError("Please upload the translated script file (TXT).")
+                if not batch_json_upload:
+                    raise ValidationError("Please upload the manga_script.json coordinates file.")
+                
+                # 提前创建输出目录并复制两个文件
+                batch_output_path.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(batch_script_upload, batch_output_path / "manga_script_translated.txt")
+                shutil.copy2(batch_json_upload, batch_output_path / "manga_script.json")
+                
+            _batch_progress_callback(0.5, desc=f"Running {pipeline_mode} pipeline...")
+            
+            run_advanced_batch_pipeline(
+                input_dir=process_dir,
+                config=config,
+                output_dir=batch_output_path,
+                mode=pipeline_mode
+            )
+            
+            # 伪造一个 results 字典让前端 UI 画廊显示和统计不报错
+            file_count = len(list(process_dir.glob("*.*"))) if pipeline_mode != "export_only" else 0
+            results = {
+                "success_count": file_count,
+                "error_count": 0,
+                "errors": {}
+            }
 
         processing_time = time.time() - start_time
         results["processing_time"] = processing_time

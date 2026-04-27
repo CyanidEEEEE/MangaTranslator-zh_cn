@@ -381,6 +381,42 @@ def create_layout(
                             label="Parallel Requests",
                             info="Number of images to process simultaneously",
                         )
+                        
+                        # --- 新增：高级批量工作流选择与文件上传 ---
+                        batch_workflow_mode = gr.Radio(
+                            choices=[
+                                "Standard (Page-by-page)", 
+                                "Advanced (Auto API - Whole Chapter)", 
+                                "Advanced (Export Script Only)", 
+                                "Advanced (Import Translated Script & Render)"
+                            ],
+                            value="Standard (Page-by-page)",
+                            label="Batch Workflow Mode",
+                            info="Select your preferred translation pipeline. 'Standard' is the default page-by-page processing. 'Advanced' modes utilize the Two-Pass architecture for full-chapter context."
+                        )
+                        batch_script_upload = gr.File(
+                            label="Upload Translated Script (TXT)",
+                            file_count="single",
+                            type="filepath",
+                            visible=False
+                        )
+                        batch_json_upload = gr.File(
+                            label="Upload Coordinates (manga_script.json)",
+                            file_count="single",
+                            type="filepath",
+                            visible=False
+                        )
+                        
+                        # 同步显示/隐藏两个上传框
+                        batch_workflow_mode.change(
+                            fn=lambda x: [
+                                gr.update(visible=(x == "Advanced (Import Translated Script & Render)")),
+                                gr.update(visible=(x == "Advanced (Import Translated Script & Render)"))
+                            ],
+                            inputs=batch_workflow_mode,
+                            outputs=[batch_script_upload, batch_json_upload],
+                            queue=False
+                        )
                     with gr.Column(scale=1):
                         batch_output_gallery = gr.Gallery(
                             label="Translated Images",
@@ -2180,6 +2216,9 @@ def create_layout(
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
+            batch_workflow_mode,     # <--- 新增
+            batch_script_upload,
+            batch_json_upload,
         ]
 
         # Config Tab Navigation & Updates

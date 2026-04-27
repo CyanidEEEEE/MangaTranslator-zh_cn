@@ -760,6 +760,12 @@ def handle_batch_click(
     """Callback for the 'Start Batch Translating' button click. Uses dataclasses."""
     input_files = args[0]
     input_zip = args[1] if len(args) > 1 else None
+    
+    # 提取最后两个新增的参数
+    batch_workflow_mode = args[-3]
+    batch_script_upload = args[-2]
+    batch_json_upload = args[-1]
+    
     progress(0, desc="Starting batch process...")
     global CANCELLATION_MANAGER
     CANCELLATION_MANAGER = CancellationManager()
@@ -793,7 +799,9 @@ def handle_batch_click(
         else:
             input_to_process = input_files
 
-        ui_state = _build_ui_state_from_args(args[2:], is_batch=True)
+        # 注意：这里使用 args[2:-2] 来切片，以剔除最后两个新加的流程控制参数
+        # 确保传入 _build_ui_state_from_args 的参数列表与原版完全一致，防止报错
+        ui_state = _build_ui_state_from_args(args[2:-3], is_batch=True)
 
         _validate_ui_state(ui_state)
 
@@ -805,6 +813,7 @@ def handle_batch_click(
         )
         selected_font_pack_name = ui_state.batch_font_pack
 
+        # 调用 logic.py 时，传入新增的工作流参数
         results = logic.process_batch_logic(
             input_dir_or_files=input_to_process,
             config=backend_config,
@@ -813,11 +822,14 @@ def handle_batch_click(
             fonts_base_dir=fonts_base_dir,
             gradio_progress=progress,
             cancellation_manager=CANCELLATION_MANAGER,
+            batch_workflow_mode=batch_workflow_mode, # <--- 新增传递
+            batch_script_upload=batch_script_upload, # <--- 新增传递
+            batch_json_upload=batch_json_upload,
         )
 
         output_path = results["output_path"]
         gallery_images = []
-        if output_path.exists():
+        if output_path.exists() and batch_workflow_mode != "Advanced (Export Script Only)":
             # Use rglob to recursively find all images when structure is preserved
             processed_files = list(output_path.rglob("*.*"))
             image_extensions = [".jpg", ".jpeg", ".png", ".webp"]
@@ -870,7 +882,6 @@ def handle_batch_click(
         )
         gr.Error(cleaned)
         return None, _status_update(cleaned)
-
 
 def handle_save_config_click(*args: Any) -> str:
     """Callback for the 'Save Config' button. Uses dataclasses."""
