@@ -777,6 +777,12 @@ def extract_text_with_manga_ocr(
 
                 extracted_texts.append(text.strip() if text else "")
 
+                # Cleanup to prevent fragmentation
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             except Exception as e:
                 log_message(
                     f"manga-ocr failed for image {i + 1}: {e}", always_print=True
@@ -788,6 +794,30 @@ def extract_text_with_manga_ocr(
     except Exception as e:
         log_message(f"Error with manga-ocr: {e}", always_print=True)
         return ["[OCR FAILED]"] * len(images)
+
+
+def _get_image_size_value(size_config, key: str):
+    if isinstance(size_config, dict):
+        return size_config.get(key)
+    return getattr(size_config, key, None)
+
+
+def _get_paddle_ocr_vl_size(processor, max_pixels: int) -> dict:
+    image_processor = processor.image_processor
+    size_config = getattr(image_processor, "size", {}) or {}
+
+    shortest_edge = getattr(image_processor, "min_pixels", None)
+    if shortest_edge is None:
+        shortest_edge = _get_image_size_value(size_config, "shortest_edge")
+    if shortest_edge is None:
+        shortest_edge = _get_image_size_value(size_config, "min_pixels")
+    if shortest_edge is None:
+        shortest_edge = 28 * 28 * 130
+
+    return {
+        "shortest_edge": shortest_edge,
+        "longest_edge": max_pixels,
+    }
 
 
 def extract_text_with_paddle_ocr_vl(
@@ -809,58 +839,82 @@ def extract_text_with_paddle_ocr_vl(
         model_manager = get_model_manager()
         processor, model = model_manager.get_paddle_ocr_vl(verbose=verbose)
 
-        max_pixels = 1280 * 28 * 28
+        extracted_texts = ["[OCR FAILED]"] * len(images)
+        batch_size = 12  # Process in batches for massive performance gain
 
-        extracted_texts = []
-        for i, img in enumerate(images):
-            try:
+        for i in range(0, len(images), batch_size):
+            batch_imgs = images[i : i + batch_size]
+            valid_indices = []
+            messages_batch = []
+
+            for j, img in enumerate(batch_imgs):
                 if img is None:
                     log_message(
-                        f"Image {i + 1} is None (decode failure), skipping",
+                        f"Image {i + j + 1} is None (decode failure), skipping",
                         always_print=True,
                     )
-                    extracted_texts.append("[OCR FAILED]")
                     continue
-
-                log_message(
-                    f"Processing image {i + 1}/{len(images)} with PaddleOCR-VL-1.5",
-                    verbose=verbose,
+                valid_indices.append(j)
+                messages_batch.append(
+                    [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": img},
+                                {"type": "text", "text": "OCR:"},
+                            ],
+                        }
+                    ]
                 )
 
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": img},
-                            {"type": "text", "text": "OCR:"},
-                        ],
-                    }
-                ]
+            if not messages_batch:
+                continue
+
+            log_message(
+                f"Processing images {i + 1} to {min(i + batch_size, len(images))}/{len(images)} with PaddleOCR-VL-1.5 (Batched)",
+                verbose=verbose,
+            )
+
+            try:
                 inputs = processor.apply_chat_template(
-                    messages,
+                    messages_batch,
                     add_generation_prompt=True,
                     tokenize=True,
                     return_dict=True,
                     return_tensors="pt",
-                    images_kwargs={
-                        "size": {
-                            "shortest_edge": processor.image_processor.min_pixels,
-                            "longest_edge": max_pixels,
-                        }
-                    },
+                    padding=True,
                 ).to(model.device)
 
-                outputs = model.generate(**inputs, max_new_tokens=1024)
+                with torch.no_grad():
+                    # Limit max_new_tokens to 256 and add repetition_penalty to prevent
+                    # the VLM from falling into an infinite hallucination loop on empty backgrounds.
+                    outputs = model.generate(
+                        **inputs, 
+                        max_new_tokens=256,
+                        repetition_penalty=1.15,
+                        pad_token_id=processor.tokenizer.pad_token_id if hasattr(processor, "tokenizer") else None,
+                        eos_token_id=processor.tokenizer.eos_token_id if hasattr(processor, "tokenizer") else None
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
 
-                text = processor.decode(outputs[0][inputs["input_ids"].shape[-1] : -1])
-                extracted_texts.append(text.strip() if text else "")
+                for j, out_tokens in enumerate(outputs):
+                    idx_in_batch = valid_indices[j]
+                    text = processor.decode(out_tokens[inputs["input_ids"].shape[-1] :], skip_special_tokens=True)
+                    extracted_texts[i + idx_in_batch] = text.strip() if text else ""
+                    
+                del inputs
+                del outputs
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             except Exception as e:
                 log_message(
-                    f"PaddleOCR-VL-1.5 failed for image {i + 1}: {e}",
+                    f"PaddleOCR-VL-1.5 batch {i + 1} to {min(i + batch_size, len(images))} failed: {e}",
                     always_print=True,
                 )
-                extracted_texts.append("[OCR FAILED]")
 
         return extracted_texts
 

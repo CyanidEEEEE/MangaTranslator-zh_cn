@@ -120,6 +120,7 @@ def process_single_bubble(
     neighbor_bboxes: Optional[list] = None,
     processing_scale: float = 1.0,
     image_bgr: Optional[np.ndarray] = None,
+    text_segmentation_prob_map: Optional[np.ndarray] = None,
 ):
     """
     Process a single speech bubble mask to extract text regions and determine fill color.
@@ -209,6 +210,11 @@ def process_single_bubble(
             )
 
         thresholded_roi = cv2.bitwise_and(thresholded_roi, roi_mask)
+
+        prob_mask = None
+        if text_segmentation_prob_map is not None:
+            # The AI model can hallucinate and destroy the Otsu mask. We skip the bitwise_and for now.
+            pass
 
         if neighbor_bboxes and detection_bbox is not None:
             shrunk_roi_mask = _build_adaptive_shrink_mask(
@@ -351,36 +357,76 @@ def process_single_bubble(
                         )
 
                 text_color_bgr = None
-                if image_bgr is not None:
-                    text_mask = cv2.bitwise_and(
-                        cv2.bitwise_not(thresholded_roi), shrunk_roi_mask
-                    )
-                    sample_mask = cv2.erode(
-                        text_mask, np.ones((3, 3), np.uint8), iterations=1
-                    )
-                    text_pixels_bgr = image_bgr[sample_mask == 255]
-                    # Fallback if erosion obliterates thin text
-                    if text_pixels_bgr.size == 0:
-                        text_pixels_bgr = image_bgr[text_mask == 255]
+                stroke_color_bgr = None
+                stroke_width_ratio = 0.0
+                if image_bgr is not None and text_bbox is not None:
+                    try:
+                        from core.ml.model_manager import get_model_manager
+                        font_detector = get_model_manager().get_font_detector_model()
 
-                    if text_pixels_bgr.size > 0:
-                        sampled_bgr = tuple(
-                            np.median(text_pixels_bgr, axis=0).astype(int)
-                        )
-                        hsv = cv2.cvtColor(
-                            np.uint8([[sampled_bgr]]), cv2.COLOR_BGR2HSV
-                        )[0][0]
-                        if hsv[1] < 25:
-                            if not is_colored_bubble:
-                                text_color_bgr = (
-                                    (0, 0, 0) if fill_color_bgr == (255, 255, 255) else (255, 255, 255)
-                                )
-                            else:
-                                text_color_bgr = (
-                                    (0, 0, 0) if hsv[2] < 128 else (255, 255, 255)
-                                )
+                        x1, y1, x2, y2 = text_bbox
+                        pad = 10
+                        h, w = image_bgr.shape[:2]
+                        cx1, cy1 = max(0, x1 - pad), max(0, y1 - pad)
+                        cx2, cy2 = min(w, x2 + pad), min(h, y2 + pad)
+                        crop_bgr = image_bgr[cy1:cy2, cx1:cx2]
+
+                        from PIL import Image
+                        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+                        pil_crop = Image.fromarray(crop_rgb)
+
+                        font_preds = font_detector.inference([pil_crop])
+                        font_props = font_preds[0] if font_preds else None
+
+                        if font_props:
+                            tc_rgb = font_props.text_color
+                            predicted_tc_bgr = (tc_rgb[2], tc_rgb[1], tc_rgb[0])
+                            sc_rgb = font_props.stroke_color
+                            predicted_sc_bgr = (sc_rgb[2], sc_rgb[1], sc_rgb[0])
+                            predicted_sw_ratio = font_props.stroke_width_px / max(1, w)
+                            log_message(f"YuzuMarker detected: text={predicted_tc_bgr}, stroke={predicted_sc_bgr}, stroke_width={predicted_sw_ratio:.3f}", verbose=verbose)
+
+                            # Fallback to robust color sampling because YuzuMarker colors can be highly inaccurate on some manga
+                            raise Exception("Fallback to standard color sampling")
                         else:
-                            text_color_bgr = sampled_bgr
+                            raise Exception("Font detector returned empty predictions")
+
+
+
+                    except Exception as e:
+                        if str(e) == "Fallback to standard color sampling":
+                            log_message("YuzuMarker colors ignored; using standard sampling.", verbose=verbose)
+                        else:
+                            log_message(f"YuzuMarker font detection failed: {e}. Falling back to standard color sampling.", always_print=True)
+                        text_mask = cv2.bitwise_and(
+                            cv2.bitwise_not(thresholded_roi), shrunk_roi_mask
+                        )
+                        sample_mask = cv2.erode(
+                            text_mask, np.ones((3, 3), np.uint8), iterations=1
+                        )
+                        text_pixels_bgr = image_bgr[sample_mask == 255]
+                        # Fallback if erosion obliterates thin text
+                        if text_pixels_bgr.size == 0:
+                            text_pixels_bgr = image_bgr[text_mask == 255]
+
+                        if text_pixels_bgr.size > 0:
+                            sampled_bgr = tuple(
+                                np.median(text_pixels_bgr, axis=0).astype(int)
+                            )
+                            hsv = cv2.cvtColor(
+                                np.uint8([[sampled_bgr]]), cv2.COLOR_BGR2HSV
+                            )[0][0]
+                            if hsv[1] < 25:
+                                if not is_colored_bubble:
+                                    text_color_bgr = (
+                                        (0, 0, 0) if fill_color_bgr == (255, 255, 255) else (255, 255, 255)
+                                    )
+                                else:
+                                    text_color_bgr = (
+                                        (0, 0, 0) if hsv[2] < 128 else (255, 255, 255)
+                                    )
+                            else:
+                                text_color_bgr = sampled_bgr
 
                 return (
                     final_mask,
@@ -389,11 +435,29 @@ def process_single_bubble(
                     sample_color_bgr,
                     text_bbox,
                     text_color_bgr,
+                    stroke_color_bgr,
+                    stroke_width_ratio,
                 )
 
-        raise CleaningError("Failed to process bubble mask")
+        log_message(
+            f"{'[SAM]' if is_sam else ''}Detection {detection_bbox}: 0 text fragments found. Returning full mask as fallback.",
+            verbose=verbose,
+        )
+        x1, y1, x2, y2 = detection_bbox
+        return (
+            base_mask.copy(),
+            (255, 255, 255) if not is_black_bubble else (0, 0, 0),
+            False,
+            (255, 255, 255) if not is_black_bubble else (0, 0, 0),
+            (x1, y1, x2, y2),
+            (0, 0, 0) if not is_black_bubble else (255, 255, 255),
+            (255, 255, 255) if not is_black_bubble else (0, 0, 0),
+            0.0,
+        )
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         log_message(
             f"Failed to process {'SAM' if is_sam else 'YOLO'} mask for {detection_bbox}",
             always_print=True,
@@ -425,6 +489,7 @@ def clean_speech_bubbles(
     flux_low_vram: bool = False,
     flux_luminance_correction: bool = True,
     bubble_detector_model: str = "yolo_1",
+    text_segmentation_prob_map: Optional[np.ndarray] = None,
 ):
     """
     Clean speech bubbles using YOLO/SAM masks and optional Flux inpainting for colored bubbles.
@@ -463,7 +528,7 @@ def clean_speech_bubbles(
     """
     try:
         if isinstance(image_input, (str, Path)):
-            pil_image = Image.open(image_input)
+            pil_image = Image.open(image_input).convert("RGB")
             image_path = image_input
         else:
             pil_image = image_input
@@ -543,6 +608,8 @@ def clean_speech_bubbles(
                         sample_color_bgr,
                         text_bbox,
                         text_color_bgr,
+                        stroke_color_bgr,
+                        stroke_width_ratio,
                     ) = process_single_bubble(
                         base_mask,
                         img_gray,
@@ -561,6 +628,7 @@ def clean_speech_bubbles(
                         neighbor_bboxes=detection.get("conjoined_neighbor_bboxes"),
                         processing_scale=processing_scale,
                         image_bgr=image,
+                        text_segmentation_prob_map=text_segmentation_prob_map,
                     )
                 except Exception as e:
                     retry_success = False
@@ -592,6 +660,8 @@ def clean_speech_bubbles(
                             is_colored_bubble = retry_res["is_colored"]
                             text_bbox = retry_res["text_bbox"]
                             text_color_bgr = retry_res.get("text_color_bgr")
+                            stroke_color_bgr = retry_res.get("stroke_color_bgr")
+                            stroke_width_ratio = retry_res.get("stroke_width_ratio", 0.0)
                             retry_success = True
                             log_message(
                                 f"Otsu retry successful for {detection.get('bbox')}",
@@ -641,6 +711,8 @@ def clean_speech_bubbles(
                         sample_color_bgr,
                         text_bbox,
                         text_color_bgr,
+                        stroke_color_bgr,
+                        stroke_width_ratio,
                     ) = process_single_bubble(
                         base_mask,
                         img_gray,
@@ -659,6 +731,7 @@ def clean_speech_bubbles(
                         neighbor_bboxes=detection.get("conjoined_neighbor_bboxes"),
                         processing_scale=processing_scale,
                         image_bgr=image,
+                        text_segmentation_prob_map=text_segmentation_prob_map,
                     )
 
                 except Exception as e:
@@ -691,6 +764,8 @@ def clean_speech_bubbles(
                             is_colored_bubble = retry_res["is_colored"]
                             text_bbox = retry_res["text_bbox"]
                             text_color_bgr = retry_res.get("text_color_bgr")
+                            stroke_color_bgr = retry_res.get("stroke_color_bgr")
+                            stroke_width_ratio = retry_res.get("stroke_width_ratio", 0.0)
                             retry_success = True
                             log_message(
                                 f"Otsu retry successful for {detection.get('bbox')}",
@@ -712,13 +787,13 @@ def clean_speech_bubbles(
                     {
                         "mask": final_mask,
                         "base_mask": base_mask,
-                        "color": (
-                            sample_color_bgr if sample_color_bgr else fill_color_bgr
-                        ),
+                        "color": tuple(int(x) for x in fill_color_bgr) if fill_color_bgr is not None else (255, 255, 255),
                         "bbox": detection.get("bbox"),
                         "is_colored": is_colored_bubble,
                         "text_bbox": text_bbox,
-                        "text_color_bgr": text_color_bgr,
+                        "text_color_bgr": tuple(int(x) for x in text_color_bgr) if text_color_bgr is not None else None,
+                        "stroke_color_bgr": tuple(int(x) for x in stroke_color_bgr) if stroke_color_bgr is not None else None,
+                        "stroke_width_ratio": float(stroke_width_ratio) if stroke_width_ratio is not None else 0.0,
                         "is_sam": is_sam_mask,
                         "inpainted": False,
                     }
@@ -895,6 +970,7 @@ def retry_cleaning_with_otsu(
     processing_scale: float = 1.0,
     verbose: bool = False,
     classify_colored: bool = False,
+    text_segmentation_prob_map: Optional[np.ndarray] = None,
 ) -> Optional[dict]:
     """
     Retry cleaning for a single bubble using Otsu thresholding.
@@ -964,6 +1040,7 @@ def retry_cleaning_with_otsu(
             neighbor_bboxes=bubble_info.get("neighbor_bboxes"),
             processing_scale=processing_scale,
             image_bgr=image_bgr,
+            text_segmentation_prob_map=text_segmentation_prob_map,
         )
     except CleaningError as e:
         log_message(
@@ -988,6 +1065,8 @@ def retry_cleaning_with_otsu(
         sample_color_bgr,
         text_bbox,
         text_color_bgr,
+        stroke_color_bgr,
+        stroke_width_ratio,
     ) = result
 
     bubble_color = sample_color_bgr if sample_color_bgr else fill_color_bgr
@@ -1005,5 +1084,7 @@ def retry_cleaning_with_otsu(
         "is_colored": is_colored_bubble,
         "text_bbox": text_bbox,
         "text_color_bgr": text_color_bgr,
+        "stroke_color_bgr": stroke_color_bgr,
+        "stroke_width_ratio": stroke_width_ratio,
         "is_sam": bubble_info.get("is_sam", False),
     }

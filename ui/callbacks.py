@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from pathlib import Path
@@ -108,6 +109,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         use_subpixel_rendering,
         font_hinting,
         use_ligatures,
+        pure_black_text,
         output_format,
         jpeg_quality,
         png_compression,
@@ -159,7 +161,10 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         outside_text_osb_use_subpixel_rendering_val,
         outside_text_osb_font_hinting_val,
         outside_text_bbox_expansion_percent_val,
-        outside_text_osb_render_expansion_multiplier_val,
+        outside_text_osb_render_expansion_narrow_multiplier_val,
+        outside_text_osb_render_expansion_tiny_multiplier_val,
+        outside_text_osb_render_expansion_aspect_ratio_threshold_val,
+        outside_text_osb_render_expansion_area_ratio_threshold_val,
         outside_text_text_box_proximity_ratio_val,
         image_upscale_mode_val,
         image_upscale_factor_val,
@@ -226,8 +231,17 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             osb_use_subpixel_rendering=outside_text_osb_use_subpixel_rendering_val,
             osb_font_hinting=outside_text_osb_font_hinting_val,
             bbox_expansion_percent=float(outside_text_bbox_expansion_percent_val),
-            osb_render_expansion_multiplier=float(
-                outside_text_osb_render_expansion_multiplier_val
+            osb_render_expansion_narrow_multiplier=float(
+                outside_text_osb_render_expansion_narrow_multiplier_val
+            ),
+            osb_render_expansion_tiny_multiplier=float(
+                outside_text_osb_render_expansion_tiny_multiplier_val
+            ),
+            osb_render_expansion_aspect_ratio_threshold=float(
+                outside_text_osb_render_expansion_aspect_ratio_threshold_val
+            ),
+            osb_render_expansion_area_ratio_threshold=float(
+                outside_text_osb_render_expansion_area_ratio_threshold_val
             ),
             text_box_proximity_ratio=float(outside_text_text_box_proximity_ratio_val),
         ),
@@ -268,6 +282,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             use_subpixel_rendering=use_subpixel_rendering,
             font_hinting=font_hinting,
             use_ligatures=use_ligatures,
+            pure_black_text=pure_black_text,
             hyphenate_before_scaling=hyphenate_before_scaling_val,
             detach_trailing_ellipsis=detach_trailing_ellipsis_val,
             hyphen_penalty=hyphen_penalty_val,
@@ -760,48 +775,55 @@ def handle_batch_click(
     """Callback for the 'Start Batch Translating' button click. Uses dataclasses."""
     input_files = args[0]
     input_zip = args[1] if len(args) > 1 else None
-    
-    # 提取最后两个新增的参数
-    batch_workflow_mode = args[-3]
+
+    # 提取最后几个新增的参数
+    batch_workflow_mode = args[-5]
+    batch_large_directory_mode = args[-4]
+    batch_large_directory_path = args[-3]
     batch_script_upload = args[-2]
     batch_json_upload = args[-1]
-    
+
     progress(0, desc="Starting batch process...")
     global CANCELLATION_MANAGER
     CANCELLATION_MANAGER = CancellationManager()
     try:
         zip_file_path = None
-        if input_zip:
-            try:
-                zip_path_str = normalize_zip_file_input(input_zip)
-                zip_file_path = validate_zip_file(zip_path_str)
-            except (ValidationError, FileNotFoundError) as e:
-                raise gr.Error(f"{ERROR_PREFIX}{str(e)}")
+        if batch_large_directory_mode and batch_large_directory_path:
+            input_to_process = batch_large_directory_path
+            if not os.path.exists(input_to_process) or not os.path.isdir(input_to_process):
+                raise gr.Error(f"{ERROR_PREFIX}提供的大目录路径不存在或无效: {input_to_process}")
+        else:
+            if input_zip:
+                try:
+                    zip_path_str = normalize_zip_file_input(input_zip)
+                    zip_file_path = validate_zip_file(zip_path_str)
+                except (ValidationError, FileNotFoundError) as e:
+                    raise gr.Error(f"{ERROR_PREFIX}{str(e)}")
 
-        if input_files:
-            if not isinstance(input_files, list):
+            if input_files:
+                if not isinstance(input_files, list):
+                    raise gr.Error(
+                        f"{ERROR_PREFIX}Invalid input format. Expected a list of files."
+                    )
+
+            if not zip_file_path and not input_files:
                 raise gr.Error(
-                    f"{ERROR_PREFIX}Invalid input format. Expected a list of files."
+                    f"{ERROR_PREFIX}Please upload images, a folder, or a ZIP archive."
                 )
 
-        if not zip_file_path and not input_files:
-            raise gr.Error(
-                f"{ERROR_PREFIX}Please upload images, a folder, or a ZIP archive."
-            )
+            if zip_file_path and input_files:
+                input_to_process = {
+                    "zip": str(zip_file_path),
+                    "files": input_files,
+                }
+            elif zip_file_path:
+                input_to_process = str(zip_file_path)
+            else:
+                input_to_process = input_files
 
-        if zip_file_path and input_files:
-            input_to_process = {
-                "zip": str(zip_file_path),
-                "files": input_files,
-            }
-        elif zip_file_path:
-            input_to_process = str(zip_file_path)
-        else:
-            input_to_process = input_files
-
-        # 注意：这里使用 args[2:-2] 来切片，以剔除最后两个新加的流程控制参数
+        # 注意：这里使用 args[2:-5] 来切片，以剔除最后五个新加的流程控制参数
         # 确保传入 _build_ui_state_from_args 的参数列表与原版完全一致，防止报错
-        ui_state = _build_ui_state_from_args(args[2:-3], is_batch=True)
+        ui_state = _build_ui_state_from_args(args[2:-5], is_batch=True)
 
         _validate_ui_state(ui_state)
 
@@ -823,13 +845,14 @@ def handle_batch_click(
             gradio_progress=progress,
             cancellation_manager=CANCELLATION_MANAGER,
             batch_workflow_mode=batch_workflow_mode, # <--- 新增传递
+            batch_large_directory_mode=batch_large_directory_mode,
             batch_script_upload=batch_script_upload, # <--- 新增传递
             batch_json_upload=batch_json_upload,
         )
 
         output_path = results["output_path"]
         gallery_images = []
-        if output_path.exists() and batch_workflow_mode != "Advanced (Export Script Only)":
+        if output_path.exists() and batch_workflow_mode != "高级模式 (仅导出未翻译脚本)":
             # Use rglob to recursively find all images when structure is preserved
             processed_files = list(output_path.rglob("*.*"))
             image_extensions = [".jpg", ".jpeg", ".png", ".webp"]
@@ -869,6 +892,8 @@ def handle_batch_click(
         return None, _status_update("Batch process cancelled by user.")
     except (ValidationError, FileNotFoundError, ValueError, logic.LogicError) as e:
         progress(1.0, desc="Error occurred")
+        import traceback
+        traceback.print_exc()
         cleaned = _clean_error_message(e)
         gr.Error(cleaned)
         return None, _status_update(cleaned)
@@ -894,7 +919,6 @@ def handle_save_config_click(*args: Any) -> str:
         conjoined_detection,
         osb_text_verification,
         use_panel_sorting,
-        rd,
         thresholding_val,
         otsu,
         inpaint_colored_bubbles,
@@ -915,6 +939,7 @@ def handle_save_config_click(*args: Any) -> str:
         tp,
         tk,
         max_tokens,
+        rd,
         trans_mode,
         ocr_method_val,
         max_fs,
@@ -923,6 +948,7 @@ def handle_save_config_click(*args: Any) -> str:
         subpix,
         hint,
         liga,
+        pure_black_text_val,
         out_fmt,
         jq,
         pngc,
@@ -982,7 +1008,10 @@ def handle_save_config_click(*args: Any) -> str:
         outside_text_osb_use_subpixel_rendering_val,
         outside_text_osb_font_hinting_val,
         outside_text_bbox_expansion_percent_val,
-        outside_text_osb_render_expansion_multiplier_val,
+        outside_text_osb_render_expansion_narrow_multiplier_val,
+        outside_text_osb_render_expansion_tiny_multiplier_val,
+        outside_text_osb_render_expansion_aspect_ratio_threshold_val,
+        outside_text_osb_render_expansion_area_ratio_threshold_val,
         outside_text_text_box_proximity_ratio_val,
         image_upscale_mode_val,
         image_upscale_factor_val,
@@ -1035,8 +1064,17 @@ def handle_save_config_click(*args: Any) -> str:
             osb_use_subpixel_rendering=outside_text_osb_use_subpixel_rendering_val,
             osb_font_hinting=outside_text_osb_font_hinting_val,
             bbox_expansion_percent=float(outside_text_bbox_expansion_percent_val),
-            osb_render_expansion_multiplier=float(
-                outside_text_osb_render_expansion_multiplier_val
+            osb_render_expansion_narrow_multiplier=float(
+                outside_text_osb_render_expansion_narrow_multiplier_val
+            ),
+            osb_render_expansion_tiny_multiplier=float(
+                outside_text_osb_render_expansion_tiny_multiplier_val
+            ),
+            osb_render_expansion_aspect_ratio_threshold=float(
+                outside_text_osb_render_expansion_aspect_ratio_threshold_val
+            ),
+            osb_render_expansion_area_ratio_threshold=float(
+                outside_text_osb_render_expansion_area_ratio_threshold_val
             ),
             text_box_proximity_ratio=float(outside_text_text_box_proximity_ratio_val),
         ),
@@ -1077,6 +1115,7 @@ def handle_save_config_click(*args: Any) -> str:
             use_subpixel_rendering=subpix,
             font_hinting=hint,
             use_ligatures=liga,
+            pure_black_text=pure_black_text_val,
             hyphenate_before_scaling=hyphenate_before_scaling_val,
             detach_trailing_ellipsis=detach_trailing_ellipsis_val,
             hyphen_penalty=hyphen_penalty_val,
@@ -1222,7 +1261,6 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.detection.conjoined_detection,
         default_ui_state.detection.use_osb_text_verification,
         default_ui_state.detection.use_panel_sorting,
-        default_ui_state.llm_settings.reading_direction,
         default_ui_state.cleaning.thresholding_value,
         default_ui_state.cleaning.use_otsu_threshold,
         default_ui_state.cleaning.inpaint_colored_bubbles,
@@ -1274,6 +1312,7 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         ),
         gr.update(value=top_k_val, interactive=top_k_interactive),
         gr.update(value=max_tokens_val),
+        default_ui_state.llm_settings.reading_direction,
         gr.update(value=default_ui_state.llm_settings.translation_mode),
         gr.update(value=default_ui_state.llm_settings.ocr_method),
         default_ui_state.rendering.max_font_size,
@@ -1282,6 +1321,7 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.rendering.use_subpixel_rendering,
         default_ui_state.rendering.font_hinting,
         default_ui_state.rendering.use_ligatures,
+        default_ui_state.rendering.pure_black_text,
         default_ui_state.output.output_format,
         default_ui_state.output.jpeg_quality,
         default_ui_state.output.png_compression,
@@ -1363,7 +1403,10 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.outside_text.osb_use_subpixel_rendering,
         default_ui_state.outside_text.osb_font_hinting,
         default_ui_state.outside_text.bbox_expansion_percent,
-        default_ui_state.outside_text.osb_render_expansion_multiplier,
+        default_ui_state.outside_text.osb_render_expansion_narrow_multiplier,
+        default_ui_state.outside_text.osb_render_expansion_tiny_multiplier,
+        default_ui_state.outside_text.osb_render_expansion_aspect_ratio_threshold,
+        default_ui_state.outside_text.osb_render_expansion_area_ratio_threshold,
         default_ui_state.outside_text.text_box_proximity_ratio,
         gr.update(value=default_ui_state.output.image_upscale_mode),
         gr.update(
@@ -1832,3 +1875,51 @@ def handle_translation_mode_change(translation_mode: str, current_ocr_method: st
             return gr.update(interactive=False)
     else:
         return gr.update(interactive=True)
+
+def handle_export_config():
+    """Exports the currently saved config, removing sensitive API keys."""
+    import tempfile
+    import json
+    from . import settings_manager
+    
+    saved_settings = settings_manager.get_saved_settings()
+    
+    # Scrub sensitive API keys
+    scrub_keys = [
+        "google_api_key",
+        "openai_api_key",
+        "anthropic_api_key",
+        "xai_api_key",
+        "deepseek_api_key",
+        "zai_api_key",
+        "moonshot_api_key",
+        "openrouter_api_key",
+        "openai_compatible_api_key",
+        "outside_text_huggingface_token"
+    ]
+    for k in scrub_keys:
+        if k in saved_settings:
+            saved_settings[k] = ""
+            
+    temp_dir = tempfile.gettempdir()
+    export_path = os.path.join(temp_dir, "mangatl_config_export.json")
+    with open(export_path, "w", encoding="utf-8") as f:
+        json.dump(saved_settings, f, indent=4)
+        
+    return gr.update(value=export_path, visible=True)
+
+def handle_import_config(file_obj):
+    """Imports settings from a JSON file."""
+    import json
+    from . import settings_manager
+    if file_obj is None:
+        return gr.update()
+        
+    try:
+        with open(file_obj.name, "r", encoding="utf-8") as f:
+            imported_settings = json.load(f)
+            
+        settings_manager.save_config(imported_settings)
+        return "<span style='color:green;font-weight:bold'>✅ 成功导入设置！请关闭控制台并重新启动程序让设置生效。</span>"
+    except Exception as e:
+        return f"<span style='color:red;font-weight:bold'>❌ 导入失败：{str(e)}</span>"

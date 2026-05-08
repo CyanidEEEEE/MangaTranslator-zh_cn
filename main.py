@@ -3,7 +3,13 @@ import os
 import tempfile
 import time
 import zipfile
+import warnings
 from pathlib import Path
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 
 import torch
 
@@ -123,8 +129,8 @@ def main():
     parser.add_argument(
         "--openai-compatible-url",
         type=str,
-        default="http://localhost:1234/v1",
-        help="Base URL for the OpenAI-Compatible endpoint (default is LM Studio)",
+        default="http://localhost:8080/v1",
+        help="Base URL for the OpenAI-Compatible endpoint (default is llama.cpp)",
     )
     parser.add_argument(
         "--openai-compatible-api-key",
@@ -972,7 +978,14 @@ def main():
             osb_use_subpixel_rendering=args.osb_use_subpixel,
             osb_font_hinting=args.osb_font_hinting,
             bbox_expansion_percent=args.osb_bbox_expansion,
-            osb_render_expansion_multiplier=args.osb_render_expansion,
+            osb_render_expansion_narrow_multiplier=args.osb_render_expansion_narrow,
+            osb_render_expansion_tiny_multiplier=args.osb_render_expansion_tiny,
+            osb_render_expansion_aspect_ratio_threshold=(
+                args.osb_render_expansion_aspect_threshold
+            ),
+            osb_render_expansion_area_ratio_threshold=(
+                args.osb_render_expansion_area_threshold
+            ),
             text_box_proximity_ratio=args.osb_text_box_proximity_ratio,
         ),
         preprocessing=PreprocessingConfig(

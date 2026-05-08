@@ -206,7 +206,7 @@ def create_layout(
         title="MangaTranslator", js=js_credits, css_paths="style.css"
     ) as app:
 
-        gr.Markdown("# MangaTranslator")
+        gr.Markdown("# 漫画翻译器 (MangaTranslator)")
 
         font_choices, initial_default_font = utils.get_available_font_packs(
             fonts_base_dir
@@ -261,43 +261,43 @@ def create_layout(
 
         # --- Define UI Components ---
         with gr.Tabs():
-            with gr.TabItem("Translator"):
+            with gr.TabItem("翻译器"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         input_image = gr.Image(
                             type="filepath",
-                            label="Upload Image",
+                            label="上传图片",
                             show_download_button=False,
                             image_mode=None,
                             elem_id="translator_input_image",
                         )
                         font_dropdown = gr.Dropdown(
                             choices=font_choices,
-                            label="Text Font",
+                            label="文本字体",
                             value=default_font,
                             filterable=False,
                         )
-                        with gr.Accordion("Translation Settings", open=True):
+                        with gr.Accordion("翻译设定", open=True):
                             # Hidden state to store original language selection before manga-ocr forces Japanese
                             original_language_state = gr.State(
-                                value=saved_settings.get("input_language", "Japanese")
+                                value=lambda k="input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d)
                             )
                             input_language = gr.Dropdown(
                                 SOURCE_LANGUAGES,
-                                label="Source Language",
-                                value=saved_settings.get("input_language", "Japanese"),
+                                label="源语言 (Source Language)",
+                                value=lambda k="input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d),
                                 allow_custom_value=True,
                             )
                             output_language = gr.Dropdown(
                                 TARGET_LANGUAGES,
-                                label="Target Language",
-                                value=saved_settings.get("output_language", "English"),
+                                label="目标语言 (Target Language)",
+                                value=lambda k="output_language", d="English": settings_manager.get_saved_settings().get(k, d),
                                 allow_custom_value=True,
                             )
                         special_instructions = gr.Textbox(
-                            label="Special Instructions",
-                            placeholder="Give the LLM optional context, formatting instructions, etc.",
-                            value=saved_settings.get("special_instructions", ""),
+                            label="提示词 / 特殊指令 (Prompt)",
+                            placeholder="给大语言模型提供可选的背景设定、角色名、排版格式要求等...",
+                            value=lambda k="special_instructions", d="": settings_manager.get_saved_settings().get(k, d),
                             lines=1,
                             max_lines=10,
                             elem_id="translator_special_instructions",
@@ -305,70 +305,64 @@ def create_layout(
                     with gr.Column(scale=1):
                         output_image = gr.Image(
                             type="pil",
-                            label="Translated Image",
+                            label="翻译后图片",
                             interactive=False,
                             elem_id="translator_output_image",
                         )
                         status_message = gr.Textbox(
-                            label="Status",
+                            label="运行状态",
                             interactive=False,
                             elem_id="translator_status_message",
                         )
                         with gr.Row():
-                            translate_button = gr.Button("Translate", variant="primary")
-                            clear_button = gr.Button("Clear")
+                            translate_button = gr.Button("开始翻译", variant="primary")
+                            clear_button = gr.Button("清除")
                             cancel_button = gr.Button(
-                                "Cancel", variant="stop", visible=False
+                                "取消", variant="stop", visible=False
                             )
 
-            with gr.TabItem("Batch"):
+            with gr.TabItem("批量处理"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         input_files = gr.File(
-                            label="Upload Images or Folder",
+                            label="上传图片或文件夹",
                             file_count="directory",
                             file_types=["image"],
                             type="filepath",
                         )
                         input_zip = gr.File(
-                            label="Upload ZIP Archive (preserves directory structure)",
+                            label="上传 ZIP 压缩包 (保留目录结构)",
                             file_count="single",
                             file_types=[".zip"],
                             type="filepath",
                         )
                         batch_font_dropdown = gr.Dropdown(
                             choices=font_choices,
-                            label="Text Font",
+                            label="文本字体",
                             value=batch_default_font,
                             filterable=False,
                         )
-                        with gr.Accordion("Translation Settings", open=True):
+                        with gr.Accordion("翻译设定", open=True):
                             # Hidden state to store original language selection before manga-ocr forces Japanese
                             batch_original_language_state = gr.State(
-                                value=saved_settings.get(
-                                    "batch_input_language", "Japanese"
-                                )
+                                value=lambda k="batch_input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d)
                             )
                             batch_input_language = gr.Dropdown(
                                 SOURCE_LANGUAGES,
-                                label="Source Language",
-                                value=saved_settings.get(
-                                    "batch_input_language", "Japanese"
-                                ),
+                                label="源语言 (Source Language)",
+                                value=lambda k="batch_input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d),
                                 allow_custom_value=True,
                             )
                             batch_output_language = gr.Dropdown(
                                 TARGET_LANGUAGES,
-                                label="Target Language",
-                                value=saved_settings.get(
-                                    "batch_output_language", "English"
-                                ),
+                                label="目标语言 (Target Language)",
+                                value=lambda k="batch_output_language", d="English": settings_manager.get_saved_settings().get(k, d),
                                 allow_custom_value=True,
                             )
                         batch_special_instructions = gr.Textbox(
-                            label="Special Instructions",
-                            placeholder="Give the LLM optional context, formatting instructions, etc.",
-                            value=saved_settings.get("batch_special_instructions", ""),
+                            label="提示词 / 特殊指令 (Prompt)",
+                            placeholder="给大语言模型提供可选的背景设定、角色名、排版格式要求等...",
+                            value=lambda k="batch_special_instructions", d="": settings_manager.get_saved_settings().get(k, d),
                             lines=1,
                             max_lines=10,
                             elem_id="batch_special_instructions",
@@ -378,48 +372,71 @@ def create_layout(
                             maximum=10,
                             value=int(saved_settings.get("batch_parallel_requests", 1)),
                             step=1,
-                            label="Parallel Requests",
-                            info="Number of images to process simultaneously",
+                            label="并发请求数 (Parallel Requests)",
+                            info="同时处理的图片数量。提高可加快速度，但消耗更多显存和网络资源。",
                         )
-                        
-                        # --- 新增：高级批量工作流选择与文件上传 ---
                         batch_workflow_mode = gr.Radio(
                             choices=[
-                                "Standard (Page-by-page)", 
-                                "Advanced (Auto API - Whole Chapter)", 
-                                "Advanced (Export Script Only)", 
-                                "Advanced (Import Translated Script & Render)"
+                                "标准模式 (逐页处理)",
+                                "高级模式 (全图上下文自动关联 API)",
+                                "高级模式 (仅导出未翻译脚本)",
+                                "高级模式 (导入已翻译脚本并渲染)",
                             ],
-                            value="Standard (Page-by-page)",
-                            label="Batch Workflow Mode",
-                            info="Select your preferred translation pipeline. 'Standard' is the default page-by-page processing. 'Advanced' modes utilize the Two-Pass architecture for full-chapter context."
+                            value="标准模式 (逐页处理)",
+                            label="批量工作流模式",
+                            info="选择你想要的翻译流程。'Standard' 是默认的逐页处理。'Advanced' 利用二次扫描架构获取全章上下文（需配合两步走工作流）。",
+                        )
+                        batch_large_directory_mode = gr.Checkbox(
+                            value=False,
+                            label="大目录模式",
+                            info="自动处理第一级所有子文件夹（每个子文件夹作为一个独立输出）",
+                        )
+                        batch_large_directory_path = gr.Textbox(
+                            label="输入大目录所在路径 (绝对路径)",
+                            placeholder="例如: D:\\manga\\mahou",
+                            visible=False,
+                            interactive=True,
                         )
                         batch_script_upload = gr.File(
-                            label="Upload Translated Script (TXT)",
-                            file_count="single",
+                            label="上传翻译后脚本 (TXT)",
+                            file_types=[".txt"],
                             type="filepath",
-                            visible=False
+                            visible=False,
                         )
+
                         batch_json_upload = gr.File(
-                            label="Upload Coordinates (manga_script.json)",
-                            file_count="single",
+                            label="上传坐标信息 (manga_script.json)",
+                            file_types=[".json"],
                             type="filepath",
-                            visible=False
+                            visible=False,
                         )
-                        
-                        # 同步显示/隐藏两个上传框
+
+                        def _update_batch_visibility(mode, ldm):
+                            is_import = (mode == "高级模式 (导入已翻译脚本并渲染)") and not ldm
+                            return (
+                                gr.update(visible=is_import),
+                                gr.update(visible=is_import),
+                                gr.update(visible=not ldm),
+                                gr.update(visible=not ldm),
+                                gr.update(visible=ldm, interactive=True)
+                            )
+
                         batch_workflow_mode.change(
-                            fn=lambda x: [
-                                gr.update(visible=(x == "Advanced (Import Translated Script & Render)")),
-                                gr.update(visible=(x == "Advanced (Import Translated Script & Render)"))
-                            ],
-                            inputs=batch_workflow_mode,
-                            outputs=[batch_script_upload, batch_json_upload],
-                            queue=False
+                            fn=_update_batch_visibility,
+                            inputs=[batch_workflow_mode, batch_large_directory_mode],
+                            outputs=[batch_script_upload, batch_json_upload, input_files, input_zip, batch_large_directory_path],
+                            queue=False,
                         )
+                        batch_large_directory_mode.change(
+                            fn=_update_batch_visibility,
+                            inputs=[batch_workflow_mode, batch_large_directory_mode],
+                            outputs=[batch_script_upload, batch_json_upload, input_files, input_zip, batch_large_directory_path],
+                            queue=False,
+                        )
+
                     with gr.Column(scale=1):
                         batch_output_gallery = gr.Gallery(
-                            label="Translated Images",
+                            label="翻译后图库",
                             show_label=True,
                             columns=4,
                             rows=2,
@@ -427,31 +444,38 @@ def create_layout(
                             object_fit="contain",
                         )
                         batch_status_message = gr.Textbox(
-                            label="Status",
+                            label="运行状态",
                             interactive=False,
                             elem_id="batch_status_message",
                         )
                         with gr.Row():
                             batch_process_button = gr.Button(
-                                "Start Batch Translating", variant="primary"
+                                "开始批量翻译", variant="primary"
                             )
-                            batch_clear_button = gr.Button("Clear")
+                            batch_clear_button = gr.Button("清除")
                             batch_cancel_button = gr.Button(
-                                "Cancel", variant="stop", visible=False
+                                "取消", variant="stop", visible=False
                             )
 
-            with gr.TabItem("Config", elem_id="settings-tab-container"):
+            with gr.TabItem("核心设置", elem_id="settings-tab-container"):
                 config_initial_provider = initial_provider
                 config_initial_model_name = initial_model_name
                 config_initial_models_choices = initial_models_choices
 
                 with gr.Row(elem_id="config-button-row"):
                     save_config_btn = gr.Button(
-                        "Save Config", variant="primary", scale=3
+                        "保存设置", variant="primary", scale=2
+                    )
+                    import_config_btn = gr.UploadButton(
+                        "导入设置", file_types=[".json"], variant="secondary", scale=1
+                    )
+                    export_config_btn = gr.Button(
+                        "导出设置", variant="secondary", scale=1
                     )
                     reset_defaults_btn = gr.Button(
-                        "Reset Defaults", variant="secondary", scale=1
+                        "恢复默认设置", variant="secondary", scale=1
                     )
+                export_config_file = gr.File(label="导出的配置文件", visible=False)
 
                 # Assign specific ID for JS targeting
                 config_status = gr.Markdown(elem_id="config_status_message")
@@ -461,31 +485,31 @@ def create_layout(
                         nav_buttons = []
                         setting_groups = []
                         nav_button_detection = gr.Button(
-                            "Detection",
+                            "检测 (Detection)",
                             elem_classes=["nav-button", "nav-button-selected"],
                         )
                         nav_buttons.append(nav_button_detection)
                         nav_button_cleaning = gr.Button(
-                            "Cleaning", elem_classes="nav-button"
+                            "擦除 (Cleaning)", elem_classes="nav-button"
                         )
                         nav_buttons.append(nav_button_cleaning)
                         nav_button_translation = gr.Button(
-                            "Translation", elem_classes="nav-button"
+                            "翻译 (Translation)", elem_classes="nav-button"
                         )
                         nav_buttons.append(nav_button_translation)
                         nav_button_rendering = gr.Button(
-                            "Rendering", elem_classes="nav-button"
+                            "渲染 (Rendering)", elem_classes="nav-button"
                         )
                         nav_buttons.append(nav_button_rendering)
                         nav_button_outside_text = gr.Button(
-                            "OSB Text", elem_classes="nav-button"
+                            "拟声词 (OSB Text)", elem_classes="nav-button"
                         )
                         nav_buttons.append(nav_button_outside_text)
                         nav_button_output = gr.Button(
-                            "Output", elem_classes="nav-button"
+                            "输出 (Output)", elem_classes="nav-button"
                         )
                         nav_buttons.append(nav_button_output)
-                        nav_button_other = gr.Button("Other", elem_classes="nav-button")
+                        nav_button_other = gr.Button("其他 (Other)", elem_classes="nav-button")
                         nav_buttons.append(nav_button_other)
 
                     with gr.Column(scale=4, elem_id="config-content-area"):
@@ -493,85 +517,69 @@ def create_layout(
                         with gr.Group(
                             visible=True, elem_classes="settings-group"
                         ) as group_detection:
-                            gr.Markdown("### Speech Bubble Detection")
+                            gr.Markdown("### 对话框检测 (Speech Bubble Detection)")
                             bubble_detector_model = gr.Radio(
                                 choices=["yolo_1", "yolo_2"],
-                                value=saved_settings.get(
-                                    "bubble_detector_model", "yolo_1"
-                                ),
-                                label="Bubble Detector Model",
+                                value=lambda k="bubble_detector_model", d="yolo_1": settings_manager.get_saved_settings().get(k, d),
+                                label="对话框检测模型",
                                 info=("Primary YOLO model for bubble detection."),
                             )
                             confidence = gr.Slider(
                                 0.1,
                                 1.0,
-                                value=saved_settings.get("confidence", 0.6),
+                                value=lambda k="confidence", d=0.6: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Bubble Confidence Threshold",
-                                info="Lower values detect more bubbles, but potentially include false positives.",
+                                label="对话框置信度阈值",
+                                info="值越低检测到的对话框越多，但可能包含误判。",
                             )
                             conjoined_detection_checkbox = gr.Checkbox(
-                                value=saved_settings.get("conjoined_detection", True),
-                                label="Conjoined Bubble Detection",
-                                info=(
-                                    "Uses a secondary YOLO model to detect and split "
-                                    "conjoined speech bubbles into separate bubbles."
-                                ),
+                                value=lambda k="conjoined_detection", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="连体气泡分割 (Conjoined Bubble Detection)",
+                                info=None,
                             )
                             conjoined_confidence = gr.Slider(
                                 0.1,
                                 1.0,
-                                value=saved_settings.get("conjoined_confidence", 0.35),
+                                value=lambda k="conjoined_confidence", d=0.35: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Conjoined Bubble Confidence Threshold",
-                                info="Increase to filter out false positives, but may miss some conjoined bubbles.",
+                                label="连体气泡置信度阈值",
+                                info="提高阈值可过滤误判，但可能漏掉部分连体气泡。",
                                 interactive=saved_settings.get(
                                     "conjoined_detection", True
                                 ),
                             )
                             use_panel_sorting_checkbox = gr.Checkbox(
-                                value=saved_settings.get("use_panel_sorting", True),
-                                label="Use Panel-aware Sorting",
-                                info=(
-                                    "Use a panel detection YOLO model to group and sort speech bubbles "
-                                    "within each panel for better reading order accuracy."
-                                ),
+                                value=lambda k="use_panel_sorting", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="使用基于分镜的排序 (Panel-aware Sorting)",
+                                info=None,
                             )
                             panel_confidence = gr.Slider(
                                 0.05,
                                 1.0,
-                                value=saved_settings.get("panel_confidence", 0.25),
+                                value=lambda k="panel_confidence", d=0.25: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Panel Confidence Threshold",
-                                info="Increase to filter out false positives, but may miss some panels.",
+                                label="分镜置信度阈值",
+                                info="提高阈值可过滤误判，但可能漏掉部分分镜。",
                                 interactive=saved_settings.get(
                                     "use_panel_sorting", True
                                 ),
                             )
                             seg_model = gr.Radio(
                                 choices=["sam3", "sam2", "yolo"],
-                                value=saved_settings.get("seg_model", "yolo"),
-                                label="Segmentation Model",
-                                info=(
-                                    "Model to use to segment speech bubbles. "
-                                    "SAM 3 requires a HF token (shared with 'OSB Text' section)."
-                                ),
+                                value=lambda k="seg_model", d="yolo": settings_manager.get_saved_settings().get(k, d),
+                                label="图像分割模型 (Segmentation Model)",
+                                info=None,
                             )
                             osb_text_verification_checkbox = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "use_osb_text_verification", True
-                                ),
-                                label="Use AnimeText YOLO model for Bubble Verification",
-                                info=(
-                                    "Use the AnimeText YOLO model to confirm bubble detections fully cover text. "
-                                    "Requires a Hugging Face token (shared with 'OSB Text' section)."
-                                ),
+                                value=lambda k="use_osb_text_verification", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="使用 AnimeText 验证气泡",
+                                info=None,
                             )
                             config_reading_direction = gr.Radio(
                                 choices=["rtl", "ltr"],
-                                label="Reading Direction",
-                                value=saved_settings.get("reading_direction", "rtl"),
-                                info="Order for sorting bubbles (rtl=Manga, ltr=Comic).",
+                                label="阅读方向 (Reading Direction)",
+                                value=lambda k="reading_direction", d="rtl": settings_manager.get_saved_settings().get(k, d),
+                                info="气泡排序方向（rtl=日漫从右到左，ltr=美漫从左到右）。",
                                 elem_id="config_reading_direction",
                             )
                         setting_groups.append(group_detection)
@@ -580,40 +588,30 @@ def create_layout(
                         with gr.Group(
                             visible=False, elem_classes="settings-group"
                         ) as group_cleaning:
-                            gr.Markdown("### Mask Cleaning & Refinement")
+                            gr.Markdown("### 掩码清理与优化 (Mask Cleaning & Refinement)")
                             thresholding_value = gr.Slider(
                                 0,
                                 255,
-                                value=saved_settings.get("thresholding_value", 190),
+                                value=lambda k="thresholding_value", d=190: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="Fixed Threshold Value",
-                                info=(
-                                    "Brightness threshold for text detection. Lower helps clean "
-                                    "edge-hugging text, but may thin bubble outlines"
-                                ),
+                                label="固定二值化阈值",
+                                info=None,
                                 interactive=not saved_settings.get(
                                     "use_otsu_threshold", False
                                 ),
                             )
                             use_otsu_threshold = gr.Checkbox(
-                                value=saved_settings.get("use_otsu_threshold", False),
-                                label="Force Automatic Thresholding (Otsu)",
-                                info=(
-                                    "Force Otsu's method for thresholding instead of the fixed value (on all bubbles). "
-                                    "Recommended for varied lighting. Used as fallback when the fixed "
-                                    "value fails, regardless of set value."
-                                ),
+                                value=lambda k="use_otsu_threshold", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="强制使用自动阈值 (Otsu's Method)",
+                                info=None,
                             )
                             roi_shrink_px = gr.Slider(
                                 0,
                                 10,
-                                value=saved_settings.get("roi_shrink_px", 5),
+                                value=lambda k="roi_shrink_px", d=5: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="Shrink Threshold ROI (px)",
-                                info=(
-                                    "Shrink the threshold ROI inward by N pixels before fill. "
-                                    "Lower helps clean edge-hugging text; higher preserves outlines."
-                                ),
+                                label="收缩阈值运算区域 (px)",
+                                info=None,
                             )
 
                         setting_groups.append(group_cleaning)
@@ -622,20 +620,14 @@ def create_layout(
                         with gr.Group(
                             visible=False, elem_classes="settings-group"
                         ) as group_translation:
-                            gr.Markdown("### OCR & Translation")
+                            gr.Markdown("### 文本识别与翻译 (OCR & Translation)")
                             config_translation_mode = gr.Radio(
                                 choices=["one-step", "two-step"],
-                                label="Translation Mode",
-                                value=saved_settings.get(
-                                    "translation_mode",
-                                    settings_manager.DEFAULT_SETTINGS[
+                                label="翻译模式",
+                                value=lambda k="translation_mode", d=settings_manager.DEFAULT_SETTINGS[
                                         "translation_mode"
-                                    ],
-                                ),
-                                info=(
-                                    "Determines whether to perform OCR and translation together or separately. "
-                                    "'two-step' might improve translation quality for less-capable LLMs."
-                                ),
+                                    ],: settings_manager.get_saved_settings().get(k, d),
+                                info=None,
                                 elem_id="config_translation_mode",
                             )
                             initial_ocr_method = saved_settings.get(
@@ -646,13 +638,9 @@ def create_layout(
                             )
                             ocr_method_radio = gr.Radio(
                                 choices=["LLM", "manga-ocr", "paddleocr-vl"],
-                                label="OCR Method",
+                                label="OCR 方法 (光学字符识别)",
                                 value=initial_ocr_method,
-                                info=(
-                                    "Determines whether to use a vision-capable LLM or a local OCR model for OCR. "
-                                    "Local OCR options enable text-only LLMs for translation "
-                                    "and must be used in 'two-step' translation mode."
-                                ),
+                                info=None,
                                 elem_id="ocr_method_radio",
                                 interactive=saved_settings.get(
                                     "translation_mode",
@@ -663,7 +651,7 @@ def create_layout(
                                 != "one-step",
                             )
 
-                            gr.Markdown("### LLM Settings")
+                            gr.Markdown("### 大模型设置 (LLM Settings)")
                             available_providers = utils.get_available_providers(
                                 initial_ocr_method
                             )
@@ -680,7 +668,7 @@ def create_layout(
                                 config_initial_provider = initial_provider_value
                             provider_selector = gr.Radio(
                                 choices=available_providers,
-                                label="Translation Provider",
+                                label="大语言模型提供商 (Provider)",
                                 value=initial_provider_value,
                                 elem_id="provider_selector",
                             )
@@ -688,119 +676,114 @@ def create_layout(
                                 value=initial_provider_value,
                             )
                             google_api_key = gr.Textbox(
-                                label="Google AI Studio API Key",
+                                label="Google API 密钥",
                                 placeholder="Enter Google AI Studio API key (starts with AI...)",
                                 type="password",
-                                value=saved_settings.get("google_api_key", ""),
+                                value=lambda k="google_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "Google"),
                                 elem_id="google_api_key",
-                                info="Stored locally. Or set via GOOGLE_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             openai_api_key = gr.Textbox(
-                                label="OpenAI API Key",
+                                label="OpenAI API 密钥",
                                 placeholder="Enter OpenAI API key (starts with sk-...)",
                                 type="password",
-                                value=saved_settings.get("openai_api_key", ""),
+                                value=lambda k="openai_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "OpenAI"),
                                 elem_id="openai_api_key",
-                                info="Stored locally. Or set via OPENAI_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             anthropic_api_key = gr.Textbox(
-                                label="Anthropic API Key",
+                                label="Anthropic API 密钥",
                                 placeholder="Enter Anthropic API key (starts with sk-ant-...)",
                                 type="password",
-                                value=saved_settings.get("anthropic_api_key", ""),
+                                value=lambda k="anthropic_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "Anthropic"),
                                 elem_id="anthropic_api_key",
-                                info="Stored locally. Or set via ANTHROPIC_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             xai_api_key = gr.Textbox(
-                                label="xAI API Key",
+                                label="xAI API 密钥",
                                 placeholder="Enter xAI API key (starts with xai-...)",
                                 type="password",
-                                value=saved_settings.get("xai_api_key", ""),
+                                value=lambda k="xai_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "xAI"),
                                 elem_id="xai_api_key",
-                                info="Stored locally. Or set via XAI_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             deepseek_api_key = gr.Textbox(
-                                label="DeepSeek API Key",
+                                label="DeepSeek API 密钥",
                                 placeholder="Enter DeepSeek API key (starts with sk-...)",
                                 type="password",
-                                value=saved_settings.get("deepseek_api_key", ""),
+                                value=lambda k="deepseek_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "DeepSeek"),
                                 elem_id="deepseek_api_key",
-                                info="Stored locally. Or set via DEEPSEEK_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             zai_api_key = gr.Textbox(
-                                label="Z.ai API Key",
+                                label="Z.ai API 密钥",
                                 placeholder="Enter Z.ai API key",
                                 type="password",
-                                value=saved_settings.get("zai_api_key", ""),
+                                value=lambda k="zai_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "Z.ai"),
                                 elem_id="zai_api_key",
-                                info="Stored locally. Or set via ZAI_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             moonshot_api_key = gr.Textbox(
-                                label="Moonshot API Key",
+                                label="Moonshot (Kimi) API 密钥",
                                 placeholder="Enter Moonshot API key (starts with sk-...)",
                                 type="password",
-                                value=saved_settings.get("moonshot_api_key", ""),
+                                value=lambda k="moonshot_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "Moonshot AI"),
                                 elem_id="moonshot_api_key",
-                                info="Stored locally. Or set via MOONSHOT_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             openrouter_api_key = gr.Textbox(
-                                label="OpenRouter API Key",
+                                label="OpenRouter API 密钥",
                                 placeholder="Enter OpenRouter API key (starts with sk-or-...)",
                                 type="password",
-                                value=saved_settings.get("openrouter_api_key", ""),
+                                value=lambda k="openrouter_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(config_initial_provider == "OpenRouter"),
                                 elem_id="openrouter_api_key",
-                                info="Stored locally. Or set via OPENROUTER_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             openai_compatible_url_input = gr.Textbox(
-                                label="OpenAI-Compatible URL",
+                                label="OpenAI 兼容接口 Base URL",
                                 placeholder="Enter Base URL (e.g., http://localhost:1234/v1)",
                                 type="text",
-                                value=saved_settings.get(
-                                    "openai_compatible_url",
-                                    settings_manager.DEFAULT_SETTINGS[
+                                value=lambda k="openai_compatible_url", d=settings_manager.DEFAULT_SETTINGS[
                                         "openai_compatible_url"
-                                    ],
-                                ),
+                                    ],: settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(
                                     config_initial_provider == "OpenAI-Compatible"
                                 ),
                                 elem_id="openai_compatible_url_input",
-                                info="Base URL of your OpenAI-Compatible API endpoint.",
+                                info="OpenAI 兼容接口的 Base URL 地址（例如本地部署的 http://localhost:1234/v1）。",
                             )
                             openai_compatible_api_key_input = gr.Textbox(
-                                label="OpenAI-Compatible API Key (Optional)",
+                                label="OpenAI 兼容接口 API 密钥 (可选)",
                                 placeholder="Enter API key if required",
                                 type="password",
-                                value=saved_settings.get(
-                                    "openai_compatible_api_key", ""
-                                ),
+                                value=lambda k="openai_compatible_api_key", d="": settings_manager.get_saved_settings().get(k, d),
                                 show_copy_button=False,
                                 visible=(
                                     config_initial_provider == "OpenAI-Compatible"
                                 ),
                                 elem_id="openai_compatible_api_key_input",
-                                info="Stored locally. Or set via OPENAI_COMPATIBLE_API_KEY env var.",
+                                info="将保存在本地。也可通过环境变量设置。",
                             )
                             config_model_name = gr.Dropdown(
                                 choices=config_initial_models_choices,
-                                label="Model",
+                                label="选择模型 (Model)",
                                 value=config_initial_model_name,
                                 info="Select the specific model for the chosen provider.",
                                 elem_id="config_model_name",
@@ -928,7 +911,7 @@ def create_layout(
 
                             enable_web_search_checkbox = gr.Checkbox(
                                 label=_initial_enable_web_search_label,
-                                value=saved_settings.get("enable_web_search", False),
+                                value=lambda k="enable_web_search", d=False: settings_manager.get_saved_settings().get(k, d),
                                 info=_initial_enable_web_search_info,
                                 visible=_initial_enable_web_search_visible,
                                 elem_id="enable_web_search_checkbox",
@@ -944,9 +927,7 @@ def create_layout(
 
                             enable_code_execution_checkbox = gr.Checkbox(
                                 label="Enable Code Execution with Images",
-                                value=saved_settings.get(
-                                    "enable_code_execution", False
-                                ),
+                                value=lambda k="enable_code_execution", d=False: settings_manager.get_saved_settings().get(k, d),
                                 info="Allow Gemini 3 Flash to zoom and inspect image details using code execution.",
                                 visible=_initial_enable_code_execution_visible,
                                 interactive=initial_ocr_method
@@ -954,34 +935,22 @@ def create_layout(
                                 elem_id="enable_code_execution_checkbox",
                             )
 
-                            (
-                                _initial_image_detail_visible,
-                                _initial_image_detail_choices,
-                                _initial_image_detail_default,
-                                _initial_image_detail_info,
-                            ) = utils.get_image_detail_config(
-                                config_initial_provider, config_initial_model_name
-                            )
-                            _initial_image_detail_value = saved_settings.get(
-                                "image_detail", _initial_image_detail_default
-                            )
-                            if (
-                                _initial_image_detail_choices
-                                and _initial_image_detail_value
-                                not in _initial_image_detail_choices
-                            ):
-                                _initial_image_detail_value = (
-                                    _initial_image_detail_default
-                                )
 
-                            image_detail_dropdown = gr.Radio(
-                                label="Image Detail",
-                                choices=_initial_image_detail_choices,
-                                value=_initial_image_detail_value,
-                                info=_initial_image_detail_info,
-                                visible=_initial_image_detail_visible,
-                                interactive=initial_ocr_method
-                                not in ("manga-ocr", "paddleocr-vl"),
+                            # Compute initial visibility for image_detail (OpenAI only)
+                            _id_visible, _id_choices, _id_default, _id_info = (
+                                utils.get_image_detail_config(
+                                    config_initial_provider, config_initial_model_name
+                                )
+                            )
+                            initial_image_detail_value=lambda k="image_detail", d=_id_default: settings_manager.get_saved_settings().get(k, d)
+
+                            image_detail_dropdown = gr.Dropdown(
+                                label="Image Detail Level",
+                                choices=_id_choices,
+                                value=initial_image_detail_value,
+                                info=_id_info,
+                                visible=_id_visible,
+                                interactive=initial_ocr_method not in ("manga-ocr", "paddleocr-vl"),
                                 elem_id="image_detail_dropdown",
                             )
 
@@ -996,9 +965,7 @@ def create_layout(
                                 config_initial_provider == "Google"
                                 and not _mr_bubbles_visible_init
                             )
-                            initial_media_resolution_value = saved_settings.get(
-                                "media_resolution", "auto"
-                            )
+                            initial_media_resolution_value=lambda k="media_resolution", d="auto": settings_manager.get_saved_settings().get(k, d)
 
                             media_resolution_dropdown = gr.Radio(
                                 label="Media Resolution",
@@ -1022,12 +989,8 @@ def create_layout(
                                 "process images", "process context (full page) images"
                             )
 
-                            initial_media_resolution_bubbles_value = saved_settings.get(
-                                "media_resolution_bubbles", "auto"
-                            )
-                            initial_media_resolution_context_value = saved_settings.get(
-                                "media_resolution_context", "auto"
-                            )
+                            initial_media_resolution_bubbles_value=lambda k="media_resolution_bubbles", d="auto": settings_manager.get_saved_settings().get(k, d)
+                            initial_media_resolution_context_value=lambda k="media_resolution_context", d="auto": settings_manager.get_saved_settings().get(k, d)
 
                             media_resolution_bubbles_dropdown = gr.Radio(
                                 label="Media Resolution (Bubbles)",
@@ -1050,28 +1013,28 @@ def create_layout(
                             temperature = gr.Slider(
                                 0,
                                 2.0,
-                                value=saved_settings.get("temperature", 0.1),
+                                value=lambda k="temperature", d=0.1: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Temperature",
-                                info="Controls creativity. Lower = deterministic; higher = random.",
+                                label="生成随机性 (Temperature)",
+                                info="控制生成文本的创造性。值越低越稳定确定；值越高越随机、发散。",
                                 elem_id="config_temperature",
                             )
                             top_p = gr.Slider(
                                 0,
                                 1,
-                                value=saved_settings.get("top_p", 0.95),
+                                value=lambda k="top_p", d=0.95: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Top P",
-                                info="Controls diversity. Lower = focused; higher = random.",
+                                label="核心采样 (Top P)",
+                                info="控制采样多样性。值越低越聚焦于高概率词；值越高越随机。",
                                 elem_id="config_top_p",
                             )
                             top_k = gr.Slider(
                                 0,
                                 64,
-                                value=saved_settings.get("top_k", 64),
+                                value=lambda k="top_k", d=64: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="Top K",
-                                info="Limits sampling pool to top K tokens.",
+                                label="候选词限制 (Top K)",
+                                info="将每一步的候选词池限制在概率最高的 K 个词。",
                                 interactive=(
                                     config_initial_provider
                                     not in ("OpenAI", "xAI", "DeepSeek", "Moonshot AI")
@@ -1083,33 +1046,23 @@ def create_layout(
                                 initial_max_tokens_maximum,
                                 value=initial_max_tokens,
                                 step=1024,
-                                label="Max Tokens",
-                                info="Maximum number of tokens in the response.",
+                                label="最大输出长度 (Max Tokens)",
+                                info="大模型一次性返回的最大 Token 数量。如果发现翻译长图时被截断，请尝试调大此值。",
                                 elem_id="config_max_tokens",
                             )
 
-                            gr.Markdown("### Context & Upscaling")
+                            gr.Markdown("### 上下文与图像超分 (Context & Upscaling)")
                             send_full_page_context = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "send_full_page_context", True
-                                ),
-                                label="Send Full Page to LLM",
-                                info=(
-                                    "Include full page image as context. Might improve translation quality. "
-                                    "Disable if refusals/using less-capable models or to reduce token usage."
-                                ),
+                                value=lambda k="send_full_page_context", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="将全页图像作为上下文发送",
+                                info=None,
                                 interactive=initial_ocr_method
                                 not in ("manga-ocr", "paddleocr-vl"),
                             )
                             whiteout_conjoined_bubbles = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "whiteout_conjoined_bubbles", True
-                                ),
-                                label="White-out Conjoined Bubbles",
-                                info=(
-                                    "White-out text from neighboring conjoined bubbles to avoid translating "
-                                    "the same text multiple times. Disable if encountering issues."
-                                ),
+                                value=lambda k="whiteout_conjoined_bubbles", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="涂白相连气泡 (防重叠翻译)",
+                                info=None,
                             )
                             upscale_method = gr.Radio(
                                 choices=[
@@ -1118,15 +1071,9 @@ def create_layout(
                                     ("LANCZOS", "lanczos"),
                                     ("None", "none"),
                                 ],
-                                value=saved_settings.get(
-                                    "upscale_method", "model_lite"
-                                ),
-                                label="Bubble/Context Resizing Method",
-                                info=(
-                                    "Method to resize cropped bubble images/full page before sending to LLM/OCR model. "
-                                    "Model is best quality, Model (Lite) is slightly worse quality but faster/less "
-                                    "memory, LANCZOS is worst quality but fastest/least memory."
-                                ),
+                                value=lambda k="upscale_method", d="model_lite": settings_manager.get_saved_settings().get(k, d),
+                                label="气泡/全页缩放方法 (Upscale Method)",
+                                info=None,
                             )
                             initial_upscale_method = saved_settings.get(
                                 "upscale_method", "model_lite"
@@ -1135,41 +1082,30 @@ def create_layout(
                             bubble_min_side_pixels = gr.Slider(
                                 64,
                                 512,
-                                value=saved_settings.get("bubble_min_side_pixels", 128),
+                                value=lambda k="bubble_min_side_pixels", d=128: settings_manager.get_saved_settings().get(k, d),
                                 step=16,
-                                label="Bubble Min Side Pixels",
-                                info=(
-                                    "Target minimum side length for speech bubble resizing. "
-                                    "Increase for better OCR quality, but may increase token usage."
-                                ),
+                                label="气泡裁剪图最小边长 (像素)",
+                                info=None,
                                 elem_id="config_bubble_min_side_pixels",
                                 interactive=sliders_interactive,
                             )
                             context_image_max_side_pixels = gr.Slider(
                                 512,
                                 2560,
-                                value=saved_settings.get(
-                                    "context_image_max_side_pixels", 1024
-                                ),
+                                value=lambda k="context_image_max_side_pixels", d=1024: settings_manager.get_saved_settings().get(k, d),
                                 step=128,
-                                label="Context Image Max Side Pixels",
-                                info=(
-                                    "Target maximum side length for full page image resizing. "
-                                    "Increase for better OCR quality, but may increase token usage."
-                                ),
+                                label="全页上下文最大边长 (像素)",
+                                info=None,
                                 elem_id="config_context_image_max_side_pixels",
                                 interactive=sliders_interactive,
                             )
                             osb_min_side_pixels = gr.Slider(
                                 64,
                                 512,
-                                value=saved_settings.get("osb_min_side_pixels", 128),
+                                value=lambda k="osb_min_side_pixels", d=128: settings_manager.get_saved_settings().get(k, d),
                                 step=16,
-                                label="OSB Text Min Side Pixels",
-                                info=(
-                                    "Target minimum side length for outside speech bubble resizing. "
-                                    "Increase for better OCR quality, but may increase token usage."
-                                ),
+                                label="画外音区域最小边长 (像素)",
+                                info=None,
                                 elem_id="config_osb_min_side_pixels",
                                 interactive=sliders_interactive,
                             )
@@ -1180,76 +1116,55 @@ def create_layout(
                             visible=False, elem_classes="settings-group"
                         ) as group_rendering:
                             gr.Markdown("### Font Rendering")
-                            max_font_size = gr.Slider(
-                                5,
-                                50,
-                                value=saved_settings.get("max_font_size", 16),
-                                step=1,
-                                label="Max Font Size (px)",
-                                info="The largest font size the renderer will attempt to use.",
-                            )
-                            min_font_size = gr.Slider(
-                                5,
-                                50,
-                                value=saved_settings.get("min_font_size", 8),
-                                step=1,
-                                label="Min Font Size (px)",
-                                info="The smallest font size the renderer will attempt to use before giving up.",
-                            )
+                            max_font_size = gr.State(1000)
+                            min_font_size = gr.State(4)
                             line_spacing_mult = gr.Slider(
                                 0.5,
                                 2.0,
-                                value=saved_settings.get("line_spacing_mult", 1.0),
+                                value=lambda k="line_spacing_mult", d=1.0: settings_manager.get_saved_settings().get(k, d),
                                 step=0.05,
-                                label="Line Spacing Multiplier",
-                                info="Adjusts the vertical space between lines of text (1.0 = standard).",
+                                label="行距倍率 (Line Spacing)",
+                                info="调整多行文本之间的垂直间距（1.0 = 标准）。",
                             )
                             use_subpixel_rendering = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "use_subpixel_rendering", False
-                                ),
-                                label="Use Subpixel Rendering",
-                                info=(
-                                    "Improves text clarity on RGB-based displays. "
-                                    "Disable if using a PenTile-based display (i.e., an OLED screen)"
-                                ),
+                                value=lambda k="use_subpixel_rendering", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="使用子像素渲染 (Subpixel Rendering)",
+                                info="改善 RGB 显示器上的文字清晰度。如果使用 OLED 屏幕请禁用。",
                             )
                             font_hinting = gr.Radio(
                                 choices=["none", "slight", "normal", "full"],
-                                value=saved_settings.get("font_hinting", "none"),
-                                label="Font Hinting",
-                                info="Adjusts glyph outlines to fit pixel grid. 'None' is often best for "
-                                "high-res displays.",
+                                value=lambda k="font_hinting", d="none": settings_manager.get_saved_settings().get(k, d),
+                                label="字体微调 (Font Hinting)",
+                                info="调整字形轮廓以适应像素网格。'无 (None)' 通常最适合高分辨率图像。",
                             )
                             use_ligatures = gr.Checkbox(
-                                value=saved_settings.get("use_ligatures", False),
-                                label="Use Standard Ligatures (e.g., fi, fl)",
-                                info="Enables common letter combinations to be rendered as single glyphs "
-                                "(must be supported by the font).",
+                                value=lambda k="use_ligatures", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="使用标准连字 (Ligatures)",
+                                info="允许将常见的字母组合渲染为单个字形（前提是字体支持）。",
+                            )
+                            pure_black_text = gr.Checkbox(
+                                value=lambda k="pure_black_text", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="强制纯黑字体 (Pure Black Text)",
+                                info="启用后所有气泡和文字都会被强制使用纯黑色渲染（(0, 0, 0)），不再尝试根据背景自动反色。",
                             )
                             gr.Markdown("### Text Layout")
                             detach_trailing_ellipsis = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "detach_trailing_ellipsis", True
-                                ),
-                                label="Detach Trailing Ellipsis",
-                                info="Move trailing '...' onto a new line for better text wrapping.",
+                                value=lambda k="detach_trailing_ellipsis", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="分离句尾省略号 (...)",
+                                info="将句尾的省略号移至新行，以改善文本排版换行。",
                             )
                             hyphenate_before_scaling = gr.Checkbox(
-                                value=saved_settings.get(
-                                    "hyphenate_before_scaling", True
-                                ),
-                                label="Hyphenate Long Words",
-                                info="Try inserting hyphens when wrapping before reducing font size.",
+                                value=lambda k="hyphenate_before_scaling", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="允许长单词使用连字符 (-)",
+                                info="尝试在因过长而需要缩小字体前，插入连字符以折行。",
                             )
                             hyphen_penalty = gr.Slider(
                                 100,
                                 2000,
-                                value=saved_settings.get("hyphen_penalty", 1000.0),
+                                value=lambda k="hyphen_penalty", d=1000.0: settings_manager.get_saved_settings().get(k, d),
                                 step=100,
-                                label="Hyphen Penalty",
-                                info="Penalty for hyphenated line breaks in text layout. "
-                                "Increase to discourage hyphenation.",
+                                label="连字符惩罚 (Hyphen Penalty)",
+                                info="文本排版时增加对连字符的惩罚权重。调高可减少连字符的使用。",
                                 interactive=saved_settings.get(
                                     "hyphenate_before_scaling", True
                                 ),
@@ -1257,12 +1172,10 @@ def create_layout(
                             hyphenation_min_word_length = gr.Slider(
                                 6,
                                 10,
-                                value=saved_settings.get(
-                                    "hyphenation_min_word_length", 8
-                                ),
+                                value=lambda k="hyphenation_min_word_length", d=8: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="Min Word Length for Hyphenation",
-                                info="Minimum word length required for hyphenation.",
+                                label="连字符最小单词长度",
+                                info="允许使用连字符的最小单词长度。",
                                 interactive=saved_settings.get(
                                     "hyphenate_before_scaling", True
                                 ),
@@ -1270,29 +1183,19 @@ def create_layout(
                             badness_exponent = gr.Slider(
                                 2.0,
                                 4.0,
-                                value=saved_settings.get("badness_exponent", 3.0),
+                                value=lambda k="badness_exponent", d=3.0: settings_manager.get_saved_settings().get(k, d),
                                 step=0.5,
-                                label="Badness Exponent",
-                                info="Exponent for line badness calculation in text layout. "
-                                "Increase to avoid loose lines.",
+                                label="不良度指数 (Badness Exponent)",
+                                info="控制排版对齐松紧的惩罚指数。增加可避免行间隙过于松散。",
                             )
-                            padding_pixels = gr.Slider(
-                                2,
-                                12,
-                                value=saved_settings.get("padding_pixels", 5.0),
-                                step=1,
-                                label="Padding Pixels",
-                                info="Padding between text and the edge of the speech bubble. "
-                                "Increase for more space between text and bubble boundaries.",
-                            )
+                            padding_pixels = gr.Slider(0, 50, value=lambda k="padding_pixels", d=5.0: settings_manager.get_saved_settings().get(k, d), step=1, label="预留空白像素 (Padding Pixels)", info="文字距离气泡边缘的安全预留像素值。增加此值可让文字更往中心聚拢。")
                             supersampling_factor = gr.Slider(
                                 1,
                                 16,
-                                value=saved_settings.get("supersampling_factor", 4),
+                                value=lambda k="supersampling_factor", d=4: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="Supersampling Factor",
-                                info="Render text at Nx resolution then downscale for smoother edges. "
-                                "Higher values improve quality but use slightly more memory. 1 = disabled.",
+                                label="超采样倍数 (Supersampling Factor)",
+                                info="以 N 倍分辨率渲染文字后缩放以获取平滑边缘。值越高品质越好但占用更多显存。1 = 关闭。",
                             )
                         setting_groups.append(group_rendering)
 
@@ -1302,21 +1205,15 @@ def create_layout(
                         ) as group_outside_text:
                             gr.Markdown("### Outside Speech Bubble Text")
                             outside_text_huggingface_token = gr.Textbox(
-                                value=saved_settings.get(
-                                    "outside_text_huggingface_token", ""
-                                ),
-                                label="HuggingFace Token (Required for certain features)",
+                                value=lambda k="outside_text_huggingface_token", d="": settings_manager.get_saved_settings().get(k, d),
+                                label="HuggingFace Token (部分功能必需)",
                                 type="password",
-                                info=(
-                                    "Required for downloading AnimeText YOLO (required for OSB detection), "
-                                    "Flux.1 Kontext Nunchaku, and/or SAM 3 models from HuggingFace Hub. "
-                                    "Can also set via HF_TOKEN env var."
-                                ),
+                                info="下载检测模型 (如 SAM 3, Flux Kontext 等) 所需。也可通过系统环境变量配置。",
                             )
                             outside_text_enabled = gr.Checkbox(
-                                value=saved_settings.get("outside_text_enabled", False),
-                                label="Enable OSB Text Detection",
-                                info="Detect, inpaint, and translate text outside speech bubbles.",
+                                value=lambda k="outside_text_enabled", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="启用画外音检测 (OSB Detection)",
+                                info="检测、涂白并翻译气泡外/无边框的文字（画外音、拟声词等）。",
                             )
 
                             # Wrap all settings except the enable checkbox and token in a Column with visibility control
@@ -1329,62 +1226,39 @@ def create_layout(
                                 outside_text_osb_confidence = gr.Slider(
                                     0.0,
                                     1.0,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_confidence", 0.6
-                                    ),
+                                    value=lambda k="outside_text_osb_confidence", d=0.6: settings_manager.get_saved_settings().get(k, d),
                                     step=0.05,
-                                    label="OSB Text Detection Confidence",
-                                    info="Lower values detect more text, but potentially include false positives.",
+                                    label="画外音检测置信度",
+                                    info="调低可检测更多文本，但也可能增加误判。",
                                 )
                                 outside_text_bbox_expansion_percent = gr.Slider(
                                     0.0,
                                     1.0,
-                                    value=saved_settings.get(
-                                        "outside_text_bbox_expansion_percent", 0.1
-                                    ),
+                                    value=lambda k="outside_text_bbox_expansion_percent", d=0.1: settings_manager.get_saved_settings().get(k, d),
                                     step=0.05,
-                                    label="Bounding Box Expansion",
-                                    info=(
-                                        "Percentage to expand bounding boxes for text detection. "
-                                        "Higher values capture more context around text."
-                                    ),
+                                    label="检测框扩展比例",
+                                    info="画外音检测框向外放大的百分比。调高可捕获周围更多底色作为上下文。",
                                 )
                                 outside_text_text_box_proximity_ratio = gr.Slider(
                                     0.01,
                                     0.1,
-                                    value=saved_settings.get(
-                                        "outside_text_text_box_proximity_ratio", 0.02
-                                    ),
+                                    value=lambda k="outside_text_text_box_proximity_ratio", d=0.02: settings_manager.get_saved_settings().get(k, d),
                                     step=0.01,
-                                    label="Text Box Proximity Ratio",
-                                    info=(
-                                        "Ratio for grouping nearby text boxes (as fraction of image dimension). "
-                                        "Increase to group more distant boxes together."
-                                    ),
+                                    label="文本框合并距离比",
+                                    info="用于合并临近文本框的距离比例。增加可将距离较远的零散字块合并。",
                                 )
                                 outside_text_enable_page_number_filtering = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "outside_text_enable_page_number_filtering",
-                                        False,
-                                    ),
-                                    label="Filter Page Numbers",
-                                    info=(
-                                        "Use manga-ocr on margin detections to drop likely page numbers. "
-                                        "Slightly slower and may detect false positives."
-                                    ),
+                                    value=lambda k="outside_text_enable_page_number_filtering", d=False,: settings_manager.get_saved_settings().get(k, d),
+                                    label="过滤页码",
+                                    info="识别页面边缘文字并丢弃可能的页码。会略微拖慢速度，且可能有误判。",
                                 )
                                 outside_text_page_filter_margin_threshold = gr.Slider(
                                     0.0,
                                     0.3,
-                                    value=saved_settings.get(
-                                        "outside_text_page_filter_margin_threshold",
-                                        0.1,
-                                    ),
+                                    value=lambda k="outside_text_page_filter_margin_threshold", d=0.1,: settings_manager.get_saved_settings().get(k, d),
                                     step=0.01,
-                                    label="Page Number Margin Ratio",
-                                    info=(
-                                        "Maximum vertical margin (ratio of height) for page-number filtering."
-                                    ),
+                                    label="页码边缘比例",
+                                    info="触发页码过滤的垂直边缘比例阈值。",
                                     interactive=saved_settings.get(
                                         "outside_text_enable_page_number_filtering",
                                         False,
@@ -1393,15 +1267,10 @@ def create_layout(
                                 outside_text_page_filter_min_area_ratio = gr.Slider(
                                     0.0,
                                     0.2,
-                                    value=saved_settings.get(
-                                        "outside_text_page_filter_min_area_ratio",
-                                        0.05,
-                                    ),
+                                    value=lambda k="outside_text_page_filter_min_area_ratio", d=0.05,: settings_manager.get_saved_settings().get(k, d),
                                     step=0.01,
-                                    label="Page Number Min Area Ratio",
-                                    info=(
-                                        "Minimum area ratio for page-number filtering."
-                                    ),
+                                    label="页码最小面积比",
+                                    info="触发页码过滤的最小面积比例。",
                                     interactive=saved_settings.get(
                                         "outside_text_enable_page_number_filtering",
                                         False,
@@ -1409,10 +1278,7 @@ def create_layout(
                                 )
                                 gr.Markdown("### Inpainting")
                                 outside_text_inpainting_method = gr.Radio(
-                                    value=saved_settings.get(
-                                        "outside_text_inpainting_method",
-                                        "flux_klein_4b",
-                                    ),
+                                    value=lambda k="outside_text_inpainting_method", d="flux_klein_4b",: settings_manager.get_saved_settings().get(k, d),
                                     choices=[
                                         ("Flux.2 Klein 9B", "flux_klein_9b"),
                                         ("Flux.2 Klein 4B", "flux_klein_4b"),
@@ -1420,12 +1286,8 @@ def create_layout(
                                         ("OpenCV", "opencv"),
                                         ("None (text background)", "none"),
                                     ],
-                                    label="Inpainting Method",
-                                    info=(
-                                        "Klein models are faster and cross-platform, but may introduce minor color "
-                                        "shifts. Kontext models do not shift colors, but are larger and slower. "
-                                        "Models are downloaded in 4-bit quantization."
-                                    ),
+                                    label="涂白算法 (Inpainting Method)",
+                                    info="Klein 模型较快但可能有轻微色偏。Kontext 无色偏，但模型更大且更慢。",
                                 )
                                 _initial_method = saved_settings.get(
                                     "outside_text_inpainting_method", "flux_klein_4b"
@@ -1436,14 +1298,9 @@ def create_layout(
                                         ("SDNQ (cross-platform)", "sdnq"),
                                         ("Nunchaku (CUDA)", "nunchaku"),
                                     ],
-                                    value=saved_settings.get(
-                                        "outside_text_kontext_backend", "sdnq"
-                                    ),
+                                    value=lambda k="outside_text_kontext_backend", d="sdnq": settings_manager.get_saved_settings().get(k, d),
                                     label="Kontext Backend",
-                                    info=(
-                                        "SDNQ: cross-platform, no HF token. "
-                                        "Nunchaku: CUDA-only, HF token required."
-                                    ),
+                                    info=None,
                                     visible=_is_kontext,
                                 )
                                 _is_klein_model = _initial_method in (
@@ -1457,11 +1314,9 @@ def create_layout(
                                     _is_kontext and _initial_backend == "sdnq"
                                 )
                                 outside_text_flux_low_vram = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "outside_text_flux_low_vram", False
-                                    ),
-                                    label="Low VRAM Mode",
-                                    info="Sequential CPU offload for lower memory usage (slower).",
+                                    value=lambda k="outside_text_flux_low_vram", d=False: settings_manager.get_saved_settings().get(k, d),
+                                    label="低显存模式 (Low VRAM)",
+                                    info="启用 CPU 内存卸载以降低显存占用（处理会变慢）。",
                                     visible=_show_low_vram,
                                 )
                                 outside_text_flux_num_inference_steps = gr.Slider(
@@ -1475,15 +1330,10 @@ def create_layout(
                                         == "flux_kontext"
                                         else 12
                                     ),
-                                    value=saved_settings.get(
-                                        "outside_text_flux_num_inference_steps", 4
-                                    ),
+                                    value=lambda k="outside_text_flux_num_inference_steps", d=4: settings_manager.get_saved_settings().get(k, d),
                                     step=1,
-                                    label="Steps",
-                                    info=(
-                                        "Klein: 4 is recommended. "
-                                        "Kontext: 6-15 is recommended."
-                                    ),
+                                    label="步数 (Steps)",
+                                    info="推断步数。Klein 推荐 4 步。Kontext 推荐 6-15 步。",
                                     interactive=saved_settings.get(
                                         "outside_text_inpainting_method",
                                         "flux_klein_4b",
@@ -1495,28 +1345,18 @@ def create_layout(
                                     "flux_klein_4b",
                                 ) in ("flux_klein_9b", "flux_klein_4b")
                                 outside_text_flux_luminance_correction = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "outside_text_flux_luminance_correction", True
-                                    ),
-                                    label="Luminance Correction",
-                                    info=(
-                                        "Try and match generated patch brightness to surrounding context."
-                                    ),
+                                    value=lambda k="outside_text_flux_luminance_correction", d=True: settings_manager.get_saved_settings().get(k, d),
+                                    label="亮度校正 (Luminance Correction)",
+                                    info="尝试使涂白生成的补丁亮度匹配周围的自然环境。",
                                     visible=_is_klein_for_lum,
                                 )
                                 outside_text_flux_residual_diff_threshold = gr.Slider(
                                     0.0,
                                     1.0,
-                                    value=saved_settings.get(
-                                        "outside_text_flux_residual_diff_threshold",
-                                        0.15,
-                                    ),
+                                    value=lambda k="outside_text_flux_residual_diff_threshold", d=0.15,: settings_manager.get_saved_settings().get(k, d),
                                     step=0.01,
-                                    label="Residual Diff Threshold",
-                                    info=(
-                                        "First Block Caching threshold for Flux.1 Kontext. "
-                                        "Higher = faster, but lower quality."
-                                    ),
+                                    label="残差阈值 (Residual Diff Threshold)",
+                                    info="Flux Kontext 首块缓存阈值。越高越快，但画质稍差。",
                                     interactive=saved_settings.get(
                                         "outside_text_inpainting_method",
                                         "flux_klein_4b",
@@ -1524,9 +1364,9 @@ def create_layout(
                                     == "flux_kontext",
                                 )
                                 outside_text_seed = gr.Number(
-                                    value=saved_settings.get("outside_text_seed", 1),
-                                    label="Seed",
-                                    info="Seed for reproducible inpainting (-1 = random)",
+                                    value=lambda k="outside_text_seed", d=1: settings_manager.get_saved_settings().get(k, d),
+                                    label="随机种子 (Seed)",
+                                    info="固定涂白结果的随机种子（-1 = 随机）。",
                                     precision=0,
                                     interactive=saved_settings.get(
                                         "outside_text_inpainting_method",
@@ -1535,14 +1375,9 @@ def create_layout(
                                     not in ("opencv", "none"),
                                 )
                                 inpaint_colored_bubbles = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "inpaint_colored_bubbles", False
-                                    ),
-                                    label="Use Flux to Inpaint Colored Bubbles",
-                                    info=(
-                                        "Use Flux for bubble cleaning when the interior is not pure white/black "
-                                        "(e.g., colored/grayscale)."
-                                    ),
+                                    value=lambda k="inpaint_colored_bubbles", d=False: settings_manager.get_saved_settings().get(k, d),
+                                    label="使用高级模型涂白非纯色气泡",
+                                    info="当气泡内部不是纯白/纯黑（如彩色/带渐变灰阶）时，启用 Flux 进行无痕涂白。",
                                     interactive=saved_settings.get(
                                         "outside_text_inpainting_method",
                                         "flux_klein_4b",
@@ -1551,99 +1386,77 @@ def create_layout(
                                 )
 
                                 gr.Markdown("### Font Rendering")
-                                outside_text_osb_render_expansion_multiplier = gr.Slider(
+                                outside_text_osb_render_expansion_narrow_multiplier = gr.Slider(
                                     1.0,
                                     3.0,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_render_expansion_multiplier",
-                                        1.0,
-                                    ),
+                                    value=lambda k="outside_text_osb_render_expansion_narrow_multiplier", d=1.0: settings_manager.get_saved_settings().get(k, d),
                                     step=0.1,
-                                    label="Render Expansion Multiplier",
-                                    info=(
-                                        "Expands the rendered text box by the specified multiplier. "
-                                        "Useful to remedy text being too small for narrow/tall crops."
-                                    ),
+                                    label="狭长形状渲染放大倍数 (Narrow/Tall Expansion)",
+                                    info="按此倍数向外放大细长的画外音渲染框，改善细长框导致字体过小的问题。",
+                                )
+                                outside_text_osb_render_expansion_aspect_ratio_threshold = gr.Slider(
+                                    0.05,
+                                    1.0,
+                                    value=lambda k="outside_text_osb_render_expansion_aspect_ratio_threshold", d=0.4: settings_manager.get_saved_settings().get(k, d),
+                                    step=0.01,
+                                    label="狭长形状宽长比阈值",
+                                    info="当检测框的 宽/高 比例低于此值时，会被判定为细长形状并应用上述放大倍数。",
+                                )
+                                outside_text_osb_render_expansion_tiny_multiplier = gr.Slider(
+                                    1.0,
+                                    3.0,
+                                    value=lambda k="outside_text_osb_render_expansion_tiny_multiplier", d=1.0: settings_manager.get_saved_settings().get(k, d),
+                                    step=0.1,
+                                    label="微小形状渲染放大倍数 (Tiny Expansion)",
+                                    info="按此倍数向外放大极其微小的画外音渲染框。",
+                                )
+                                outside_text_osb_render_expansion_area_ratio_threshold = gr.Slider(
+                                    0.0,
+                                    0.05,
+                                    value=lambda k="outside_text_osb_render_expansion_area_ratio_threshold", d=0.005: settings_manager.get_saved_settings().get(k, d),
+                                    step=0.001,
+                                    label="微小形状面积比阈值",
+                                    info="当检测框占全图的面积比例低于此值时，会被判定为微小形状并应用上述放大倍数。",
                                 )
                                 outside_text_osb_font_pack = gr.Dropdown(
                                     value=saved_osb_font_pack,
                                     choices=[""] + font_choices,
-                                    label="Text Font",
-                                    info="Font for rendering OSB text translations (leave empty to use main font)",
+                                    label="文本字体",
+                                    info="画外音/拟声词专用翻译字体（留空则默认使用主字体）。",
                                 )
-                                outside_text_osb_max_font_size = gr.Slider(
-                                    5,
-                                    96,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_max_font_size", 64
-                                    ),
-                                    step=1,
-                                    label="Max Font Size (px)",
-                                    info="The largest font size the renderer will attempt to use for OSB text.",
-                                )
-                                outside_text_osb_min_font_size = gr.Slider(
-                                    5,
-                                    96,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_min_font_size", 10
-                                    ),
-                                    step=1,
-                                    label="Min Font Size (px)",
-                                    info="The smallest font size the renderer will attempt to use for OSB text.",
-                                )
+                                outside_text_osb_max_font_size = gr.State(1000)
+                                outside_text_osb_min_font_size = gr.State(4)
                                 outside_text_osb_line_spacing = gr.Slider(
                                     0.5,
                                     2.0,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_line_spacing", 1.0
-                                    ),
+                                    value=lambda k="outside_text_osb_line_spacing", d=1.0: settings_manager.get_saved_settings().get(k, d),
                                     step=0.05,
-                                    label="Line Spacing Multiplier",
-                                    info=(
-                                        "Adjusts the vertical space between lines of text (1.0 = standard). "
-                                        "Also affects vertically stacked text. Decrease for tighter text (e.g., 0.9)."
-                                    ),
+                                    label="行距倍率 (Line Spacing)",
+                                    info=None,
                                 )
                                 outside_text_osb_use_subpixel_rendering = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "outside_text_osb_use_subpixel_rendering", True
-                                    ),
-                                    label="Use Subpixel Rendering",
-                                    info=(
-                                        "Improves text clarity on RGB-based displays. "
-                                        "Disable if using a PenTile-based display (i.e., an OLED screen)"
-                                    ),
+                                    value=lambda k="outside_text_osb_use_subpixel_rendering", d=True: settings_manager.get_saved_settings().get(k, d),
+                                    label="使用子像素渲染 (Subpixel Rendering)",
+                                    info="改善 RGB 显示器上的文字清晰度。如果使用 OLED 屏幕请禁用。",
                                 )
                                 outside_text_osb_font_hinting = gr.Radio(
                                     choices=["none", "slight", "normal", "full"],
-                                    value=saved_settings.get(
-                                        "outside_text_osb_font_hinting", "none"
-                                    ),
-                                    label="Font Hinting",
-                                    info=(
-                                        "Adjusts glyph outlines to fit pixel grid. 'None' is often best for "
-                                        "high-res displays."
-                                    ),
+                                    value=lambda k="outside_text_osb_font_hinting", d="none": settings_manager.get_saved_settings().get(k, d),
+                                    label="字体微调 (Font Hinting)",
+                                    info="调整字形轮廓以适应像素网格。'无 (None)' 通常最适合高分辨率图像。",
                                 )
                                 outside_text_osb_use_ligatures = gr.Checkbox(
-                                    value=saved_settings.get(
-                                        "outside_text_osb_use_ligatures", False
-                                    ),
-                                    label="Use Standard Ligatures (e.g., fi, fl)",
-                                    info=(
-                                        "Enables common letter combinations to be rendered as single glyphs "
-                                        "(must be supported by the font)."
-                                    ),
+                                    value=lambda k="outside_text_osb_use_ligatures", d=False: settings_manager.get_saved_settings().get(k, d),
+                                    label="使用标准连字 (Ligatures)",
+                                    info="允许将常见的字母组合渲染为单个字形（前提是字体支持）。",
                                 )
                                 outside_text_osb_outline_width = gr.Slider(
                                     0,
                                     10,
-                                    value=saved_settings.get(
-                                        "outside_text_osb_outline_width", 3.0
-                                    ),
+                                    value=lambda k="outside_text_osb_outline_width", d=3.0: settings_manager.get_saved_settings().get(k, d),
                                     step=0.5,
-                                    label="Outline Width (px)",
-                                    info="Width of text outline for OSB text.",
+                                    label="外发光描边宽度 (px)",
+                                    info="画外音/拟声词文字外发光的宽度。",
                                 )
                         setting_groups.append(group_outside_text)
 
@@ -1667,30 +1480,27 @@ def create_layout(
                             gr.Markdown("### Output Format")
                             output_format = gr.Radio(
                                 choices=["auto", "png", "jpeg"],
-                                label="Image Output Format",
-                                value=saved_settings.get("output_format", "png"),
-                                info="'auto' uses the same format as the input image (defaults to PNG if unknown).",
+                                label="图像输出格式",
+                                value=lambda k="output_format", d="png": settings_manager.get_saved_settings().get(k, d),
+                                info="'auto' 为自动继承原图格式（若未知则默认 png）。",
                             )
                             jpeg_quality = gr.Slider(
                                 1,
                                 100,
-                                value=saved_settings.get("jpeg_quality", 95),
+                                value=lambda k="jpeg_quality", d=95: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="JPEG Quality",
-                                info="Higher levels result in better quality, but larger file sizes.",
+                                label="JPEG 品质",
+                                info="调高可提升画质，但文件体积更大。",
                                 interactive=saved_settings.get("output_format", "png")
                                 != "png",
                             )
                             png_compression = gr.Slider(
                                 0,
                                 6,
-                                value=saved_settings.get("png_compression", 2),
+                                value=lambda k="png_compression", d=2: settings_manager.get_saved_settings().get(k, d),
                                 step=1,
-                                label="PNG Compression Level",
-                                info=(
-                                    "Uses OxiPNG. Higher levels result in smaller file sizes, "
-                                    "but slower processing times."
-                                ),
+                                label="PNG 压缩等级",
+                                info="使用 OxiPNG 压缩。调高可减小体积，但处理更慢。",
                                 interactive=saved_settings.get("output_format", "png")
                                 != "jpeg",
                             )
@@ -1698,26 +1508,17 @@ def create_layout(
                             image_upscale_mode = gr.Radio(
                                 choices=["off", "initial", "final"],
                                 value=image_upscale_mode_default,
-                                label="Image Upscaling Method",
-                                info=(
-                                    "Determines whether to upscale the initial untranslated image or the final "
-                                    "translated image. 'Initial' may result in cleaner text, but cause inconsistent "
-                                    "results compare to 'final'."
-                                ),
+                                label="图像超分处理模式",
+                                info="决定是超分'初始原图'还是'翻译后的最终图'。'初始'文字边缘更清晰，但全图风格可能不一致。",
                             )
                             image_upscale_model = gr.Radio(
                                 choices=[
                                     ("Model", "model"),
                                     ("Model (Lite)", "model_lite"),
                                 ],
-                                value=saved_settings.get(
-                                    "image_upscale_model", "model_lite"
-                                ),
-                                label="Upscaling Model",
-                                info=(
-                                    "Model to use for image upscaling. Model is best quality, "
-                                    "Model (Lite) is slightly worse quality but faster/less memory."
-                                ),
+                                value=lambda k="image_upscale_model", d="model_lite": settings_manager.get_saved_settings().get(k, d),
+                                label="超分模型 (Upscaling Model)",
+                                info="超分放大的模型。Model 画质最佳，Model (Lite) 稍逊但更省显存速度更快。",
                                 interactive=image_upscale_mode_default != "off",
                             )
                             image_upscale_factor = gr.Slider(
@@ -1725,22 +1526,14 @@ def create_layout(
                                 8.0,
                                 value=image_upscale_factor_default,
                                 step=0.1,
-                                label="Upscale Factor",
-                                info=(
-                                    "Factor for the selected upscaling mode. "
-                                    "The selected model will perform an upscaling pass every 2x, "
-                                    "downscaling to meet the target if needed."
-                                ),
+                                label="超分倍率 (Upscale Factor)",
+                                info="超分放大的倍数（支持非整数）。",
                                 interactive=image_upscale_mode_default != "off",
                             )
                             auto_scale = gr.Checkbox(
-                                value=saved_settings.get("auto_scale", True),
-                                label="Auto-Scale to Image Size",
-                                info=(
-                                    "Automatically scale pipeline parameters (fonts, kernels, etc.) "
-                                    "to input image size, treating it as 1MP. Ensures consistent behavior "
-                                    "across different image resolutions."
-                                ),
+                                value=lambda k="auto_scale", d=True: settings_manager.get_saved_settings().get(k, d),
+                                label="自动匹配图像分辨率缩放参数 (Auto-Scale)",
+                                info="根据图像分辨率自动缩放内核、字体等参数，确保多分辨率下表现一致。",
                             )
                         setting_groups.append(group_output)
 
@@ -1760,34 +1553,32 @@ def create_layout(
                                 elem_classes="config-button",
                             )
                             verbose = gr.Checkbox(
-                                value=saved_settings.get("verbose", False),
-                                label="Verbose Logging",
+                                value=lambda k="verbose", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="启用终端详细日志输出 (Verbose Logging)",
                                 info="Enable verbose logging in console.",
                             )
                             cleaning_only_toggle = gr.Checkbox(
-                                value=saved_settings.get("cleaning_only", False),
-                                label="Cleaning-only Mode",
-                                info="Skip translation and text rendering, output only the cleaned speech bubbles.",
+                                value=lambda k="cleaning_only", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="仅涂白模式 (Cleaning-only Mode)",
+                                info="跳过翻译和文字排版，只输出涂白清除掉日文的纯净底图。",
                                 interactive=not (
                                     saved_settings.get("test_mode", False)
                                     or saved_settings.get("upscaling_only", False)
                                 ),
                             )
                             upscaling_only_toggle = gr.Checkbox(
-                                value=saved_settings.get("upscaling_only", False),
-                                label="Upscaling-only Mode",
-                                info="Skip detection and translation, only upscale the image.",
+                                value=lambda k="upscaling_only", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="仅超分模式 (Upscaling-only Mode)",
+                                info="跳过一切汉化管线，单纯将图片无损超分辨率放大。",
                                 interactive=not (
                                     saved_settings.get("cleaning_only", False)
                                     or saved_settings.get("test_mode", False)
                                 ),
                             )
                             test_mode_toggle = gr.Checkbox(
-                                value=saved_settings.get("test_mode", False),
-                                label="Test Mode",
-                                info=(
-                                    "Skip translation and render placeholder text (lorem ipsum)."
-                                ),
+                                value=lambda k="test_mode", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="排版测试模式 (Test Mode)",
+                                info="跳过大模型翻译请求并节省 Token，直接使用无意义的假文(Lorem Ipsum)填充气泡以测试排版效果。",
                                 interactive=not (
                                     saved_settings.get("cleaning_only", False)
                                     or saved_settings.get("upscaling_only", False)
@@ -1805,7 +1596,6 @@ def create_layout(
             conjoined_detection_checkbox,
             osb_text_verification_checkbox,
             use_panel_sorting_checkbox,
-            config_reading_direction,
             thresholding_value,
             use_otsu_threshold,
             inpaint_colored_bubbles,
@@ -1826,6 +1616,7 @@ def create_layout(
             top_p,
             top_k,
             max_tokens,
+            config_reading_direction,
             config_translation_mode,
             ocr_method_radio,
             max_font_size,
@@ -1834,6 +1625,7 @@ def create_layout(
             use_subpixel_rendering,
             font_hinting,
             use_ligatures,
+            pure_black_text,
             output_format,
             jpeg_quality,
             png_compression,
@@ -1893,7 +1685,10 @@ def create_layout(
             outside_text_osb_use_subpixel_rendering,
             outside_text_osb_font_hinting,
             outside_text_bbox_expansion_percent,
-            outside_text_osb_render_expansion_multiplier,
+            outside_text_osb_render_expansion_narrow_multiplier,
+            outside_text_osb_render_expansion_tiny_multiplier,
+            outside_text_osb_render_expansion_aspect_ratio_threshold,
+            outside_text_osb_render_expansion_area_ratio_threshold,
             outside_text_text_box_proximity_ratio,
             image_upscale_mode,
             image_upscale_factor,
@@ -1910,7 +1705,6 @@ def create_layout(
             conjoined_detection_checkbox,
             osb_text_verification_checkbox,
             use_panel_sorting_checkbox,
-            config_reading_direction,
             thresholding_value,
             use_otsu_threshold,
             inpaint_colored_bubbles,
@@ -1931,6 +1725,7 @@ def create_layout(
             top_p,
             top_k,
             max_tokens,
+            config_reading_direction,
             config_translation_mode,
             ocr_method_radio,
             max_font_size,
@@ -1939,6 +1734,7 @@ def create_layout(
             use_subpixel_rendering,
             font_hinting,
             use_ligatures,
+            pure_black_text,
             output_format,
             jpeg_quality,
             png_compression,
@@ -1994,7 +1790,10 @@ def create_layout(
             outside_text_osb_use_subpixel_rendering,
             outside_text_osb_font_hinting,
             outside_text_bbox_expansion_percent,
-            outside_text_osb_render_expansion_multiplier,
+            outside_text_osb_render_expansion_narrow_multiplier,
+            outside_text_osb_render_expansion_tiny_multiplier,
+            outside_text_osb_render_expansion_aspect_ratio_threshold,
+            outside_text_osb_render_expansion_area_ratio_threshold,
             outside_text_text_box_proximity_ratio,
             image_upscale_mode,
             image_upscale_factor,
@@ -2045,6 +1844,7 @@ def create_layout(
             use_subpixel_rendering,
             font_hinting,
             use_ligatures,
+            pure_black_text,
             output_format,
             jpeg_quality,
             png_compression,
@@ -2096,7 +1896,10 @@ def create_layout(
             outside_text_osb_use_subpixel_rendering,
             outside_text_osb_font_hinting,
             outside_text_bbox_expansion_percent,
-            outside_text_osb_render_expansion_multiplier,
+            outside_text_osb_render_expansion_narrow_multiplier,
+            outside_text_osb_render_expansion_tiny_multiplier,
+            outside_text_osb_render_expansion_aspect_ratio_threshold,
+            outside_text_osb_render_expansion_area_ratio_threshold,
             outside_text_text_box_proximity_ratio,
             image_upscale_mode,
             image_upscale_factor,
@@ -2153,6 +1956,7 @@ def create_layout(
             use_subpixel_rendering,
             font_hinting,
             use_ligatures,
+            pure_black_text,
             output_format,
             jpeg_quality,
             png_compression,
@@ -2204,7 +2008,10 @@ def create_layout(
             outside_text_osb_use_subpixel_rendering,
             outside_text_osb_font_hinting,
             outside_text_bbox_expansion_percent,
-            outside_text_osb_render_expansion_multiplier,
+            outside_text_osb_render_expansion_narrow_multiplier,
+            outside_text_osb_render_expansion_tiny_multiplier,
+            outside_text_osb_render_expansion_aspect_ratio_threshold,
+            outside_text_osb_render_expansion_area_ratio_threshold,
             outside_text_text_box_proximity_ratio,
             image_upscale_mode,
             image_upscale_factor,
@@ -2216,7 +2023,9 @@ def create_layout(
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
-            batch_workflow_mode,     # <--- 新增
+            batch_workflow_mode,
+            batch_large_directory_mode,
+            batch_large_directory_path,
             batch_script_upload,
             batch_json_upload,
         ]
@@ -2311,7 +2120,7 @@ def create_layout(
                 max_tokens,
                 enable_web_search_checkbox,
                 enable_code_execution_checkbox,
-                image_detail_dropdown,
+            image_detail_dropdown,
                 media_resolution_dropdown,
                 media_resolution_bubbles_dropdown,
                 media_resolution_context_dropdown,
@@ -2358,7 +2167,7 @@ def create_layout(
                 max_tokens,
                 enable_web_search_checkbox,
                 enable_code_execution_checkbox,
-                image_detail_dropdown,
+            image_detail_dropdown,
                 media_resolution_dropdown,
                 media_resolution_bubbles_dropdown,
                 media_resolution_context_dropdown,
@@ -2595,7 +2404,6 @@ def create_layout(
                 send_full_page_context,
                 whiteout_conjoined_bubbles,
                 enable_code_execution_checkbox,
-                image_detail_dropdown,
                 media_resolution_dropdown,
                 media_resolution_bubbles_dropdown,
                 media_resolution_context_dropdown,
@@ -2787,6 +2595,19 @@ def create_layout(
                 openai_compatible_api_key_input,
             ],
             outputs=[config_model_name],
+            queue=False,
+        )
+
+        export_config_btn.click(
+            fn=callbacks.handle_export_config,
+            inputs=[],
+            outputs=[export_config_file],
+            queue=False,
+        )
+        import_config_btn.upload(
+            fn=callbacks.handle_import_config,
+            inputs=[import_config_btn],
+            outputs=[config_status],
             queue=False,
         )
 

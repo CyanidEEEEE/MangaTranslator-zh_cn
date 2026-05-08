@@ -1559,102 +1559,104 @@ def prepare_bubble_images_for_translation(
             always_print=True,
         )
 
-    for bubble in bubble_data:
-        prepared_bubble = bubble.copy()
-        x1, y1, x2, y2 = bubble["bbox"]
-
-        # Use the tight bbox of the mask
-        _mask = bubble.get("sam_mask")
-        _ma = None
-        if _mask is not None:
-            _ma = np.asarray(_mask)
-            if _ma.ndim == 3:
-                _ma = _ma[..., 0]
-            if _ma.ndim == 2:
-                _rows, _cols = np.where(_ma > 0)
-                if _rows.size and _cols.size:
-                    mx1, my1 = int(_cols.min()), int(_rows.min())
-                    mx2, my2 = int(_cols.max()) + 1, int(_rows.max()) + 1
-                    x1 = min(x1, mx1)
-                    y1 = min(y1, my1)
-                    x2 = max(x2, mx2)
-                    y2 = max(y2, my2)
-
-        bubble_image_cv = original_cv_image[y1:y2, x1:x2].copy()
-
-        # White-out conjoined neighbor text regions visible in this crop
-        neighbor_bboxes = bubble.get("conjoined_neighbor_bboxes")
-        if whiteout_conjoined_bubbles and neighbor_bboxes:
-            own_mask_crop = (
-                _ma[y1:y2, x1:x2] > 0 if (_ma is not None and _ma.ndim == 2) else None
-            )
-
-            for nb in neighbor_bboxes:
-                nb_tuple = tuple(int(round(v)) for v in nb)
-                neighbor_mask = mask_lookup.get(nb_tuple)
-
-                if neighbor_mask is not None:
-                    _nm = np.asarray(neighbor_mask)
-                    if _nm.ndim == 3:
-                        _nm = _nm[..., 0]
-                    if _nm.ndim == 2:
-                        nm_crop = _nm[y1:y2, x1:x2] > 0
-
-                        if own_mask_crop is not None:
-                            region_mask = nm_crop & ~own_mask_crop
-                        else:
-                            region_mask = nm_crop
-
-                        # Apply whiteout precisely on neighbor's mask pixels
-                        bubble_image_cv[region_mask] = 255
-
-        bubble_image_pil = cv2_to_pil(bubble_image_cv)
-
-        if upscale_method == "model" or upscale_method == "model_lite":
-            final_bubble_pil = process_bubble_image_cached(
-                bubble_image_pil,
-                upscale_model,
-                device,
-                bubble_min_side_pixels,
-                "min",
-                upscale_method,
-                verbose,
-            )
-        elif upscale_method == "lanczos":
-            w, h = bubble_image_pil.size
-            min_side = min(w, h)
-            if min_side < bubble_min_side_pixels:
-                scale_factor = bubble_min_side_pixels / min_side
-                new_w = int(w * scale_factor)
-                new_h = int(h * scale_factor)
-                resized_bubble = bubble_image_pil.resize((new_w, new_h), Image.LANCZOS)
-            else:
-                resized_bubble = bubble_image_pil
-            final_bubble_pil = resized_bubble
-        else:
-            final_bubble_pil = bubble_image_pil
-
-        final_bubble_cv = pil_to_cv2(final_bubble_pil)
-
+    def _process_single_bubble(bubble):
         try:
-            is_success, buffer = cv2.imencode(cv2_ext, final_bubble_cv)
-            if is_success:
-                image_b64 = base64.b64encode(buffer).decode("utf-8")
+            prepared_bubble = bubble.copy()
+            x1, y1, x2, y2 = bubble["bbox"]
+
+            # Use the tight bbox of the mask
+            _mask = bubble.get("sam_mask")
+            _ma = None
+            if _mask is not None:
+                _ma = np.asarray(_mask)
+                if _ma.ndim == 3:
+                    _ma = _ma[..., 0]
+                if _ma.ndim == 2:
+                    _rows, _cols = np.where(_ma > 0)
+                    if _rows.size and _cols.size:
+                        mx1, my1 = int(_cols.min()), int(_rows.min())
+                        mx2, my2 = int(_cols.max()) + 1, int(_rows.max()) + 1
+                        x1 = min(x1, mx1)
+                        y1 = min(y1, my1)
+                        x2 = max(x2, mx2)
+                        y2 = max(y2, my2)
+
+            bubble_image_cv = original_cv_image[y1:y2, x1:x2].copy()
+
+            # White-out conjoined neighbor text regions visible in this crop
+            neighbor_bboxes = bubble.get("conjoined_neighbor_bboxes")
+            if whiteout_conjoined_bubbles and neighbor_bboxes:
+                own_mask_crop = (
+                    _ma[y1:y2, x1:x2] > 0 if (_ma is not None and _ma.ndim == 2) else None
+                )
+
+                for nb in neighbor_bboxes:
+                    nb_tuple = tuple(int(round(v)) for v in nb)
+                    neighbor_mask = mask_lookup.get(nb_tuple)
+
+                    if neighbor_mask is not None:
+                        _nm = np.asarray(neighbor_mask)
+                        if _nm.ndim == 3:
+                            _nm = _nm[..., 0]
+                        if _nm.ndim == 2:
+                            nm_crop = _nm[y1:y2, x1:x2] > 0
+
+                            if own_mask_crop is not None:
+                                region_mask = nm_crop & ~own_mask_crop
+                            else:
+                                region_mask = nm_crop
+
+                            # Apply whiteout precisely on neighbor's mask pixels
+                            bubble_image_cv[region_mask] = 255
+
+            bubble_image_pil = cv2_to_pil(bubble_image_cv)
+
+            if upscale_method == "model" or upscale_method == "model_lite":
+                final_bubble_pil = process_bubble_image_cached(
+                    bubble_image_pil,
+                    upscale_model,
+                    device,
+                    bubble_min_side_pixels,
+                    "min",
+                    upscale_method,
+                    verbose,
+                )
+            elif upscale_method == "lanczos":
+                w, h = bubble_image_pil.size
+                min_side = min(w, h)
+                if min_side < bubble_min_side_pixels:
+                    scale_factor = bubble_min_side_pixels / min_side
+                    new_w = int(w * scale_factor)
+                    new_h = int(h * scale_factor)
+                    resized_bubble = bubble_image_pil.resize((new_w, new_h), Image.LANCZOS)
+                else:
+                    resized_bubble = bubble_image_pil
+                final_bubble_pil = resized_bubble
+            else:
+                final_bubble_pil = bubble_image_pil
+
+            try:
+                import io
+                buffer = io.BytesIO()
+                img_format = "PNG" if cv2_ext == ".png" else "JPEG"
+                final_bubble_pil.save(buffer, format=img_format)
+                image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
                 prepared_bubble["image_b64"] = image_b64
                 prepared_bubble["mime_type"] = mime_type
-                log_message(
-                    f"Bubble {x1},{y1} ({final_bubble_pil.size[0]}x{final_bubble_pil.size[1]})",
-                    verbose=verbose,
-                )
-            else:
-                log_message(
-                    f"Failed to encode bubble {bubble['bbox']}", verbose=verbose
-                )
+                prepared_bubble["pil_image"] = final_bubble_pil
+            except Exception as e:
+                log_message(f"Error encoding bubble {bubble['bbox']}: {e}", verbose=verbose)
                 prepared_bubble["image_b64"] = None
-        except Exception as e:
-            log_message(f"Error encoding bubble {bubble['bbox']}: {e}", verbose=verbose)
-            prepared_bubble["image_b64"] = None
 
-        prepared_bubbles.append(prepared_bubble)
+            return prepared_bubble
+        except Exception as e:
+            log_message(f"Error processing single bubble {bubble.get('bbox')}: {e}", always_print=True)
+            failed_bubble = bubble.copy()
+            failed_bubble["image_b64"] = None
+            return failed_bubble
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        prepared_bubbles = list(executor.map(_process_single_bubble, bubble_data))
 
     return prepared_bubbles

@@ -415,6 +415,15 @@ def translate_and_render(
     original_cv_image = pil_to_cv2(pil_image_processed)
 
     try:
+        # Generate text segmentation probability map
+        text_prob_map = None
+        try:
+            ts_model = get_model_manager().get_text_segmentation_model()
+            text_prob_map = ts_model.inference(pil_image_processed)
+            log_message("Generated text segmentation probability map", verbose=verbose)
+        except Exception as e:
+            log_message(f"Text segmentation failed (continuing without it): {e}", always_print=True)
+
         bubble_data, text_free_boxes = detect_speech_bubbles(
             image_path,
             config.yolo_model_path,
@@ -556,6 +565,7 @@ def translate_and_render(
                     flux_low_vram=config.outside_text.flux_low_vram,
                     flux_luminance_correction=config.outside_text.flux_luminance_correction,
                     bubble_detector_model=config.detection.bubble_detector_model,
+                    text_segmentation_prob_map=text_prob_map,
                 )
             except Exception as e:
                 log_message(f"Cleaning failed: {e}", always_print=True)
@@ -585,12 +595,7 @@ def translate_and_render(
                 minimum=main_min_font,
                 maximum=384,
             )
-            padding_pixels = scale_scalar(
-                config.rendering.padding_pixels,
-                processing_scale,
-                minimum=1.0,
-                maximum=80.0,
-            )
+            padding_pixels = config.rendering.padding_pixels
             osb_min_font = scale_font_size(
                 config.outside_text.osb_min_font_size,
                 processing_scale,
@@ -700,6 +705,8 @@ def translate_and_render(
                     "is_colored": info.get("is_colored", False),
                     "text_bbox": info.get("text_bbox"),
                     "text_color_bgr": info.get("text_color_bgr"),
+                    "stroke_color_bgr": info.get("stroke_color_bgr"),
+                    "stroke_width_ratio": info.get("stroke_width_ratio"),
                 }
                 for info in processed_bubbles_info
                 if "bbox" in info and "color" in info and "mask" in info
@@ -730,8 +737,12 @@ def translate_and_render(
                         line_spacing = config.outside_text.osb_line_spacing
                         use_ligs = config.outside_text.osb_use_ligatures
                         cleaned_mask = None
+                        extended_collision_mask = None
+                        text_bbox = None
                         is_dark_text = bubble.get("is_dark_text", True)
                         text_color_rgb = bubble.get("text_color_rgb", None)
+                        stroke_color_rgb = None
+                        stroke_width_ratio = 0.0
                         bubble_color_bgr = (
                             (50, 50, 50) if is_dark_text else (255, 255, 255)
                         )
@@ -749,11 +760,19 @@ def translate_and_render(
                         render_info = bubble_render_info_map.get(tuple(bbox))
                         bubble_color_bgr = (255, 255, 255)
                         cleaned_mask = None
+                        extended_collision_mask = None
                         text_color_rgb = None
+                        stroke_color_rgb = None
+                        stroke_width_ratio = 0.0
                         text_bg_rgb = None
+                        text_bbox = None
                         if render_info:
                             bubble_color_bgr = render_info["color"]
                             cleaned_mask = render_info.get("mask")
+                            
+                            extended_collision_mask = render_info.get("base_mask")
+                            text_bbox = render_info.get("text_bbox")
+                                
                             text_color_bgr_val = render_info.get("text_color_bgr")
                             if text_color_bgr_val:
                                 text_color_rgb = (
@@ -761,9 +780,26 @@ def translate_and_render(
                                     text_color_bgr_val[1],
                                     text_color_bgr_val[0],
                                 )
+                                
+                            stroke_color_bgr_val = render_info.get("stroke_color_bgr")
+                            if stroke_color_bgr_val:
+                                stroke_color_rgb = (
+                                    stroke_color_bgr_val[2],
+                                    stroke_color_bgr_val[1],
+                                    stroke_color_bgr_val[0],
+                                )
+                            
+                            stroke_width_ratio = render_info.get("stroke_width_ratio", 0.0)
+                            
+                        if config.rendering.pure_black_text:
+                            text_color_rgb = (0, 0, 0)
+                            stroke_width_ratio = 0.0
+                            outline_w = 0.0
+                            
                         vertical_stack = False
                         rotation_deg = 0.0
 
+                    min_font = 4
                     render_config = RenderingConfig(
                         min_font_size=min_font,
                         max_font_size=max_font,
@@ -774,12 +810,14 @@ def translate_and_render(
                     )
                     
                     try:
+                        min_font = 4
                         rendered_image = render_text_skia(
                             pil_image=pil_cleaned_image,
                             text=text,
                             bbox=bbox,
                             font_dir=font_dir,
                             cleaned_mask=cleaned_mask,
+                            extended_collision_mask=extended_collision_mask,
                             bubble_color_bgr=bubble_color_bgr,
                             config=render_config,
                             verbose=verbose,
@@ -789,6 +827,9 @@ def translate_and_render(
                             text_color_rgb=text_color_rgb,
                             raise_on_safe_error=False,
                             text_background_color=text_bg_rgb,
+                            stroke_color_rgb=stroke_color_rgb,
+                            stroke_width_ratio=stroke_width_ratio,
+                            text_bbox=text_bbox,
                         )
                         pil_cleaned_image = rendered_image
                         final_image_to_save = pil_cleaned_image
@@ -927,7 +968,7 @@ async def _batch_translate_parallel(
 
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         tasks = [_worker(img, i, executor) for i, img in enumerate(remaining, start=1)]
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     return results
 
@@ -988,19 +1029,13 @@ def batch_translate_images(
 # 全新的高级批量处理架构 (Two-Pass Batch Architecture) - 支持导出/API直连/导入与智能原生竖排
 # =====================================================================================
 
-def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_color_rgb, padding_pixels=0, line_spacing_mult=1.0, ss_factor=1, outline_width=0.0, outline_color=(255,255,255), text_bbox=None):
-    """
-    终极竖排渲染器：
-    1. 真实 OpenCV 内接矩形 + 15% 黄金留白收缩
-    2. 【修正】严格遵守用户指定的字体，绝不使用任何备用/替换字体！
-    3. 纯几何锚点偏移，标点完美对齐。
-    """
+def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_color_rgb, padding_pixels=0, line_spacing_mult=1.0, ss_factor=1, outline_width=0.0, outline_color=(255,255,255), text_bbox=None, bubble_mask=None, is_osb=False):
     from PIL import ImageDraw, ImageFont, Image
     import re
     import math
     
     SS = max(1, int(ss_factor))
-    text = text.replace(" ", "").replace("\n", "").replace("\r", "")
+    text = text.replace(" ", "").replace("\\n", "").replace("\\r", "")
     if not text: return pil_image
 
     VERTICAL_SUBSTITUTIONS = {
@@ -1008,110 +1043,147 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
         '（': '︵', '）': '︶', '【': '︻', '】': '︼',
         '《': '︽', '》': '︾', '〈': '︿', '〉': '﹀',
         'ー': '丨', '-': '丨', '—': '丨', '~': '丨',
-        '…': '︙', '。': '︒', '、': '︑'
+        '…': '︙'
     }
     for hz, vt in VERTICAL_SUBSTITUTIONS.items():
         text = text.replace(hz, vt)
 
+    # Insert a half-space marker (\u200b) between English/Numbers and CJK characters
+    text = re.sub(r'([a-zA-Z0-9])([\u4e00-\u9fa5\u3040-\u30ff])', '\\1\u200b\\2', text)
+    text = re.sub(r'([\u4e00-\u9fa5\u3040-\u30ff])([a-zA-Z0-9])', '\\1\u200b\\2', text)
+
     x1, y1, x2, y2 = [int(v) for v in bbox]
     box_w, box_h = max(1, x2 - x1), max(1, y2 - y1)
+    center_x = x1 + box_w / 2.0
+    center_y = y1 + box_h / 2.0
     
-    if text_bbox and len(text_bbox) == 4:
-        tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox]
-        safe_w = max(10, (tx2 - tx1) * 0.7 - padding_pixels * 2)
-        safe_h = max(10, (ty2 - ty1) * 0.7 - padding_pixels * 2)
-        center_x = tx1 + (tx2 - tx1) / 2
-        center_y = ty1 + (ty2 - ty1) / 2
-    else:
-        safe_w = max(10, box_w * 0.55 - padding_pixels * 2)
-        safe_h = max(10, box_h * 0.55 - padding_pixels * 2)
-        center_x = x1 + box_w / 2
-        center_y = y1 + box_h / 2
-        
-    target_w = max(safe_w, box_w * 0.25)
-    target_h = max(safe_h, box_h * 0.25)
+    # VISUAL CENTERING: If the original Japanese text bounding box is available,
+    # its exact center is always the most aesthetically pleasing anchor point for the new text.
+    if text_bbox is not None and len(text_bbox) == 4:
+        tx1, ty1, tx2, ty2 = [float(v) for v in text_bbox]
+        center_x = tx1 + (tx2 - tx1) / 2.0
+        center_y = ty1 + (ty2 - ty1) / 2.0
+
+    # Calculate symmetric safe width/height from the visual center to the YOLO box edges
+    safe_w = max(10, 2 * min(center_x - x1, x2 - center_x) - padding_pixels * 2)
+    safe_h = max(10, 2 * min(center_y - y1, y2 - center_y) - padding_pixels * 2)
 
     BASE_FSIZE = 100
     line_spacing = BASE_FSIZE * 1.15 * line_spacing_mult 
     char_spacing = BASE_FSIZE * 1.05
     
-    N = len(text)
+    # Calculate effective length considering half-spaces
+    N_effective = len(text) - 0.5 * text.count('\u200b')
     best_c = 1
     max_scale = 0
-    best_rows = N
+    best_rows = len(text)
+
+    OSB_SIZE_BOOST = 1.0
+    OSB_INTERNAL_PADDING = 2
     
-    for c in range(1, N + 1):
-        rows = math.ceil(N / c)
-        text_w_px = c * line_spacing
-        text_h_px = rows * char_spacing
-        
-        scale = min(target_w / text_w_px, target_h / text_h_px)
-        if scale > max_scale:
-            max_scale = scale
-            best_c = c
-            best_rows = rows
+    if is_osb:
+        safe_w = max(10, box_w - OSB_INTERNAL_PADDING * 2 - outline_width * 2)
+        safe_h = max(10, box_h - OSB_INTERNAL_PADDING * 2 - outline_width * 2)
+        for c in range(1, len(text) + 1):
+            rows = math.ceil(N_effective / c)
+            text_w_px = c * line_spacing
+            text_h_px = rows * char_spacing
+            scale = min(safe_w / text_w_px, safe_h / text_h_px)
+            scale *= OSB_SIZE_BOOST
+            if scale > max_scale:
+                max_scale = scale; best_c = c; best_rows = math.ceil(len(text) / c)
+    else:
+        def get_adaptive_ellipse_safe_ratio(width, height):
+            max_dim = max(width, height)
+            base_small, base_large = 0.95, 0.88
+            if max_dim <= 100:
+                return base_small
+            elif max_dim >= 300:
+                return base_large
+            else:
+                progress = (max_dim - 100) / 200.0
+                return base_small - (base_small - base_large) * progress
+
+        ellipse_safety_ratio = get_adaptive_ellipse_safe_ratio(box_w, box_h)
+
+        for c in range(1, len(text) + 1):
+            rows = math.ceil(N_effective / c)
+            text_w_px = c * line_spacing
+            text_h_px = rows * char_spacing
+            scale = 1.0 / math.sqrt((text_w_px / safe_w)**2 + (text_h_px / safe_h)**2)
+            scale *= ellipse_safety_ratio
+            if scale > max_scale:
+                max_scale = scale
+                best_c = c
+                best_rows = math.ceil(len(text) / c)
 
     effective_fsize = BASE_FSIZE * max_scale
     if effective_fsize > max_font:
         max_scale = max_font / BASE_FSIZE
 
     canvas_w = int(best_c * line_spacing)
-    canvas_h = int(best_rows * char_spacing)
+    canvas_h = int(math.ceil(N_effective / best_c) * char_spacing)
     ss_canvas = Image.new('RGBA', (canvas_w * SS, canvas_h * SS), (0,0,0,0))
     draw = ImageDraw.Draw(ss_canvas)
     
     try:
-        # 只加载用户指定的唯一字体
         font = ImageFont.truetype(str(font_path), BASE_FSIZE * SS)
     except:
         font = ImageFont.load_default()
 
-    out_w = int((outline_width / max(1, effective_fsize)) * BASE_FSIZE * SS) if outline_width > 0 else 0
-
-    cols = [text[i:i + best_rows] for i in range(0, N, best_rows)]
+    # Distribute characters to columns
+    cols = []
+    current_col = []
+    current_h = 0
+    # Add a small epsilon to canvas_h to prevent floating point issues causing premature wrapping
+    max_col_h = canvas_h + 1e-5
+    for char in text:
+        add_h = char_spacing * 0.5 if char == '\u200b' else char_spacing
+        if current_h + add_h > max_col_h and len(current_col) > 0:
+            cols.append(current_col)
+            current_col = [char]
+            current_h = add_h
+        else:
+            current_col.append(char)
+            current_h += add_h
+    if current_col:
+        cols.append(current_col)
     
+    out_w_ss = int((outline_width / max(1, BASE_FSIZE * max_scale)) * BASE_FSIZE * SS) if outline_width > 0 else 0
+    if out_w_ss > 0:
+        for col_idx, col_text in enumerate(cols):
+            cx = (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
+            col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char in col_text)
+            current_y = ((canvas_h - col_h) / 2) * SS
+            for char in col_text:
+                if char == '\u200b':
+                    current_y += char_spacing * SS * 0.5
+                    continue
+                cy = current_y + (char_spacing / 2) * SS
+                offset_x, offset_y = 0, 0
+                if char in ['「', '﹁', '『', '﹃']: offset_x, offset_y = BASE_FSIZE * SS * 0.1, -BASE_FSIZE * SS * 0.1
+                elif char in ['」', '﹂', '』', '﹄']: offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
+                elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']: offset_x, offset_y = BASE_FSIZE * SS * 0.25, 0
+                elif char in ['，', '。', '、']: offset_x, offset_y = BASE_FSIZE * SS * 0.5, -BASE_FSIZE * SS * 0.5
+                draw.text((cx + offset_x, cy + offset_y), char, font=font, fill=outline_color, anchor="mm", stroke_width=out_w_ss, stroke_fill=outline_color)
+                current_y += char_spacing * SS
+
     for col_idx, col_text in enumerate(cols):
         cx = (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
-        col_h = len(col_text) * char_spacing
+        col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char in col_text)
         current_y = ((canvas_h - col_h) / 2) * SS
         
         for char in col_text:
-            is_latin = bool(re.match(r'[a-zA-Z0-9_]', char))
+            if char == '\u200b':
+                current_y += char_spacing * SS * 0.5
+                continue
             cy = current_y + (char_spacing / 2) * SS
-            
-            if is_latin:
-                temp_size = int(BASE_FSIZE * SS * 2.5)
-                temp_img = Image.new('RGBA', (temp_size, temp_size), (0,0,0,0))
-                temp_draw = ImageDraw.Draw(temp_img)
-                center_coord = temp_size // 2
-                
-                if out_w > 0:
-                    for dx in [-out_w, 0, out_w]:
-                        for dy in [-out_w, 0, out_w]:
-                            if dx != 0 or dy != 0:
-                                temp_draw.text((center_coord+dx, center_coord+dy), char, font=font, fill=outline_color, anchor="mm")
-                temp_draw.text((center_coord, center_coord), char, font=font, fill=text_color_rgb, anchor="mm")
-                
-                rotated = temp_img.rotate(-90, resample=Image.Resampling.BICUBIC, expand=True)
-                paste_x = int(cx - rotated.width / 2)
-                paste_y = int(cy - rotated.height / 2)
-                ss_canvas.paste(rotated, (paste_x, paste_y), rotated)
-            else:
-                offset_x, offset_y = 0, 0
-                
-                if char in ['「', '﹁', '『', '﹃']:
-                    offset_x, offset_y = BASE_FSIZE * SS * 0.1, -BASE_FSIZE * SS * 0.1
-                elif char in ['」', '﹂', '』', '﹄']:
-                    offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
-                elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']:
-                    offset_x, offset_y = BASE_FSIZE * SS * 0.22, 0
-                    
-                if out_w > 0:
-                    for dx in [-out_w, 0, out_w]:
-                        for dy in [-out_w, 0, out_w]:
-                            if dx != 0 or dy != 0:
-                                draw.text((cx + offset_x + dx, cy + offset_y + dy), char, font=font, fill=outline_color, anchor="mm")
-                draw.text((cx + offset_x, cy + offset_y), char, font=font, fill=text_color_rgb, anchor="mm")
+            offset_x, offset_y = 0, 0
+            if char in ['「', '﹁', '『', '﹃']: offset_x, offset_y = BASE_FSIZE * SS * 0.1, -BASE_FSIZE * SS * 0.1
+            elif char in ['」', '﹂', '』', '﹄']: offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
+            elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']: offset_x, offset_y = BASE_FSIZE * SS * 0.25, 0
+            elif char in ['，', '。', '、']: offset_x, offset_y = BASE_FSIZE * SS * 0.5, -BASE_FSIZE * SS * 0.5
+            draw.text((cx + offset_x, cy + offset_y), char, font=font, fill=text_color_rgb, anchor="mm")
             
             current_y += char_spacing * SS
 
@@ -1127,8 +1199,8 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
         pil_image = pil_image.convert("RGB")
 
     return pil_image
-        
-def extract_batch_script(input_dir, config, output_dir):
+
+def extract_batch_script(input_dir, config, output_dir, cancellation_manager=None):
     """阶段一：提取全本漫画文本，生成带标签 [OSB]/[Bubble] 的剧本"""
     import os
     import json
@@ -1150,18 +1222,52 @@ def extract_batch_script(input_dir, config, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
     image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
-    image_files = sorted([f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in image_extensions])
+    image_files = sorted([f for f in input_dir.rglob('*') if f.is_file() and f.suffix.lower() in image_extensions])
     
     if not image_files:
         raise ValueError(f"No image files found in {input_dir}")
+
+    # FORCE UNLOAD FLUX: If the user previously ran a render/translation task, 
+    # Flux models might still be sitting in VRAM eating 5GB. We must explicitly kick them out 
+    # since extraction mode never uses them.
+    try:
+        from core.ml.model_manager import get_model_manager
+        mm = get_model_manager()
+        mm.unload_flux_kontext_models()
+        mm.unload_flux_kontext_sdnq_models()
+        mm.unload_flux_klein_models()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        pass
 
     global_script = {"chapter_info": {"total_pages": len(image_files)}, "pages": {}}
     log_message(f"Starting Two-Pass Extraction for {len(image_files)} images...", always_print=True)
     
     for idx, img_path in enumerate(image_files):
+        if cancellation_manager and cancellation_manager.is_cancelled():
+            from utils.exceptions import CancellationError
+            raise CancellationError("Process cancelled by user.")
+            
         log_message(f"Extracting {idx+1}/{len(image_files)}: {img_path.name}", always_print=True)
         pil_image = Image.open(img_path).convert("RGB")
         
+        text_prob_map = None
+        try:
+            from core.ml.model_manager import get_model_manager, ModelType
+            
+            # Clear cache to prevent PyTorch memory fragmentation over time
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            ts_model = get_model_manager().get_text_segmentation_model()
+            text_prob_map = ts_model.inference(pil_image)
+            log_message("Generated text segmentation probability map", verbose=config.verbose)
+        except Exception as e:
+            log_message(f"Text segmentation failed: {e}", always_print=True)
+
         bubble_data, text_free_boxes = detect_speech_bubbles(
             img_path, config.yolo_model_path, config.detection.confidence,
             device=config.device, seg_model=config.detection.seg_model,
@@ -1172,7 +1278,8 @@ def extract_batch_script(input_dir, config, output_dir):
         
         pil_image, outside_text_data = process_outside_text(
             pil_image, config, img_path, pil_image.format, verbose=config.verbose,
-            bubble_data=bubble_data, text_free_boxes=text_free_boxes, panels=panels
+            bubble_data=bubble_data, text_free_boxes=text_free_boxes, panels=panels,
+            skip_inpainting=True
         )
         
         original_cv_image = pil_to_cv2(pil_image)
@@ -1193,6 +1300,37 @@ def extract_batch_script(input_dir, config, output_dir):
 
         if upscale_model is not None:
             model_manager.clear_cache()
+            
+        # --- FREE VRAM FOR OCR PHASE ---
+        try:
+            from core.ml.model_manager import ModelType
+            model_manager.unload_model(ModelType.TEXT_SEGMENTATION, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.SAM2, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.SAM3, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_OSBTEXT, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_PANEL, force_gc=False, verbose=config.verbose)
+            model_manager.unload_upscale_models(verbose=config.verbose)
+            
+            # Explicitly break local references to models to allow Python's GC to delete them
+            if 'ts_model' in locals():
+                del ts_model
+            if 'upscale_model' in locals():
+                del upscale_model
+            
+            import gc
+            gc.collect()
+            
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            import traceback
+            log_message(f"Error unloading models: {e}", always_print=True)
+            traceback.print_exc()
+        # -------------------------------
             
         all_text_data = prepared_bubbles + outside_text_data
         if not all_text_data:
@@ -1232,15 +1370,19 @@ def extract_batch_script(input_dir, config, output_dir):
                     extracted_texts = [""] * len(images_b64)
             else:
                 pil_images_for_ocr = []
-                for b64 in images_b64:
-                    if b64.startswith('data:image'):
-                        b64 = b64.split(',')[1]
-                    pil_images_for_ocr.append(Image.open(BytesIO(base64.b64decode(b64))).convert("RGB"))
-                    
+                for item in sorted_items:
+                    if "pil_image" in item:
+                        pil_images_for_ocr.append(item["pil_image"])
+                    elif "image_b64" in item:
+                        b64 = item["image_b64"]
+                        if b64.startswith('data:image'):
+                            b64 = b64.split(',')[1]
+                        pil_images_for_ocr.append(Image.open(BytesIO(base64.b64decode(b64))).convert("RGB"))
+                        
                 if config.translation.ocr_method == "paddleocr-vl":
-                    extracted_texts = extract_text_with_paddle_ocr_vl(pil_images_for_ocr)
+                    extracted_texts = extract_text_with_paddle_ocr_vl(pil_images_for_ocr, verbose=True)
                 else:
-                    extracted_texts = extract_text_with_manga_ocr(pil_images_for_ocr)
+                    extracted_texts = extract_text_with_manga_ocr(pil_images_for_ocr, verbose=True)
         
         page_items = []
         for i, item in enumerate(sorted_items):
@@ -1254,20 +1396,20 @@ def extract_batch_script(input_dir, config, output_dir):
                 "original_text": text,
                 "translated_text": ""
             })
-        global_script["pages"][img_path.name] = page_items
+        global_script["pages"][img_path.relative_to(input_dir).as_posix()] = page_items
         
     with open(output_dir / "manga_script.json", "w", encoding="utf-8") as f:
         json.dump(global_script, f, ensure_ascii=False, indent=2)
         
     system_prompt = """## ROLE (角色设定)
-你是一位经验丰富的“漫画汉化组”资深润色主笔。你现在拿到的是**一整话（全本）**经过 OCR 提取的漫画日文台词剧本。你的任务是利用你强大的长文本记忆能力，统揽全局，将其本地化为极具画面感、情感张力和前后连贯的中文对白。
+你是一位经验丰富的“漫画汉化组”资深润色主笔。你现在拿到的是**一整话（全本）**经过 OCR 提取的漫画台词剧本。你的任务是利用你强大的长文本记忆能力，统揽全局，将其本地化为极具画面感、情感张力和前后连贯的中文对白。
 
 ## 思维与规划指令 (针对 <think> 过程)
 在生成最终译文前，请在后台逻辑中按以下顺序思考：
 1. 上下文串联（跨页记忆）：通读全话文本，理解剧情走向、人物代词（你/我/他/它）的指代关系。前一页出现的伏笔或专有名词，后一页必须保持绝对统一。
 2. 标签语境感知：原文中区分了 `[Bubble]` 和 `[OSB]`。
    - `[Bubble]`（气泡框内）：属于角色的正式对白、大喊或核心内心独白，需注重情绪爆发与语流连贯。
-   - `[OSB]`（画框外文字）：通常是角色的背景碎碎念、路人吐槽、动作音效补充或作者的旁白注解。翻译应更碎片化、口语化，或是作为主台词的辅助情绪。
+   - `[OSB]`（画框外文字）：通常是角色的背景碎碎念、路人吐槽、动作音效（拟声拟态词）补充或作者的旁白注解。翻译应更碎片化、口语化、短平快。
 3. 角色语气重构：分辨当前台词是男主、女主、路人还是旁白。根据语境赋予极具感染力的口吻（傲娇、粗犷、冷静、诱惑等），不回避任何符合该语境的露骨、激进或市井词汇。
 4. 视觉字数压缩：漫画的排版空间极小。在绝对不改变原意的前提下，进行“极限精简重组”，剔除啰嗦的修饰语，确保字数最短。
 
@@ -1277,22 +1419,29 @@ def extract_batch_script(input_dir, config, output_dir):
 2. 序号绝对对齐：必须严格以 `数字: 译文` 格式输出。**严禁**合并相邻的台词，**严禁**拆分台词，**严禁**删除空行或跳过序号！输入有多少个编号，输出就必须有多少个编号。
 3. 标签剔除：在最终输出的译文中，**请直接输出纯中文，禁止输出** `[Bubble]` 或 `[OSB]` 标签。（例如，原文为 `10: [Bubble] お！端田君！`，请直接输出 `10: 哦！端田同学！`）。
 4. 绝对单行防断层：每一个编号对应的译文，**必须写在同一物理行内**。译文内部绝对不允许出现换行符（回车键），否则解析器将无法读取。
-5. OCR 盲区处理：若原文中出现 `[OCR FAILED]` 请不要试图脑补，直接在译文中原样输出 `[OCR FAILED]` 或留空，请注意，不要在没有[OCR FAILED]的地方莫名输出[OCR FAILED]。
-6. 有一些不断重复的明显是模型识别出了问题，此时你应该根据上下文和不断重复的内容推测实际的合理内容。
+5. OCR 盲区处理：若原文中出现 `[OCR FAILED]` 请不要试图脑补，直接在译文中原样输出 `[OCR FAILED]` 或留空；请注意，不要在没有 [OCR FAILED] 的地方莫名输出该标签。
+6. OCR 乱码纠错：遇到不断重复、明显是模型识别错误的内容，请根据上下文和残缺字形，推测并输出符合逻辑的中文台词。
 
-## 汉化润色原则
-1. 拒绝翻译腔：严禁呆板直译。将日式的倒装句、半截话、省略语转化为极其地道、火辣、有生命力的中文表述。
-2. 严格的中文标点规范：**严禁**在中文里使用日式非标符号组合（如 `～！`、`～？`）。请将其转化为标准的中文表达。同时不要大量重复一个相同的符号表达，这样不符合漫画的对话框模式。
-   - 错误示范：妈，我回来啦～！ / 你很怕吧～？
-   - 正确示范：妈，我回来啦——！ / 你很怕吧？（依靠语气词或破折号来表现拖长音，而不是波浪号叠加感叹号）。
+## 汉化润色与排版原则（漫画专属）
+1. 拒绝“二次元翻译腔”：
+   - **克制语气词**：日文常有「ね」「よ」「わ」，**严禁**无脑翻译成“呢”、“哟”、“呀”。请通过调整中文语序和用词来表达情绪（例如将“不要这样啦”改为“你够了没”）。
+   - **地道重构**：将日式的倒装句、半截话转化为极具生命力的中文表述。
+2. 漫画专属标点法则（极度重要）：
+   - **绝对禁用句号**：台词末尾**绝对不允许出现句号（。）**。漫画情绪靠画面传达，句号极其死板且占用排版空间。句末请直接留空，或使用？、！、……、——。
+   - **严禁日式非标符号**：禁止使用 `～！`、`～？` 等组合。拖长音请用破折号（如：我回来啦——！），疑问/惊叹请独立使用（？ 或 ！）。
+   - **结巴与停顿**：结巴使用顿号或省略号（例：我、我不知道 / 那个……我……），**不要**用连字号。
+   - **内部呼吸感**：由于译文必须保持单行，若一句话较长，请在中间使用逗号（，）或**半角空格**隔开，方便后续嵌字人员断句。
 3. 样式触发（按需使用）：
-   - 使用 *文字* 触发斜体（用于内心独白、回忆、微弱的喘息、旁白）。
-   - 使用 **文字** 触发粗体（用于大喊、怒吼、情绪爆发的重音强调、拟声词）。
+   - 使用 *文字* 触发斜体：用于内心独白、回忆、微弱的喘息、旁白。
+   - 使用 **文字** 触发粗体：用于大喊、怒吼、情绪爆发的重音强调、以及 `[OSB]` 中的动作拟声词（如：**砰！**、**咔哒**）。
 
 ## 输出示例
 1: **你给我快点！**
 2: *我知道不用你提醒...*
 3: **老夫认错人了，简直一模一样！**
+4: 那个……学长，能稍微等我一下吗？
+5: **咚！**
+6: [OCR FAILED]
 
 ========== 剧本正文 ==========
 """
@@ -1392,7 +1541,7 @@ def auto_translate_script_api(txt_path, config, output_txt_path):
     with open(output_txt_path, "w", encoding="utf-8") as f:
         f.write(response)
 
-def render_batch_from_script(input_dir, json_path, config, output_dir):
+def render_batch_from_script(input_dir, json_path, config, output_dir, cancellation_manager=None):
     import os
     import json
     import math
@@ -1408,6 +1557,7 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
     from core.scaling import scale_font_size, scale_scalar
     from core.text.font_manager import find_font_variants
     from utils.logging import log_message
+    from utils.exceptions import CancellationError
 
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -1415,6 +1565,20 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
     
     with open(json_path, "r", encoding="utf-8") as f:
         global_script = json.load(f)
+
+    # FORCE UNLOAD OCR: If the user previously ran an extraction task, 
+    # PaddleOCR-VL (3GB) might still be sitting in VRAM. We must explicitly kick it out 
+    # since rendering mode only needs Flux (5GB) and SAM3 (1GB) and would OOM otherwise.
+    try:
+        from core.ml.model_manager import get_model_manager, ModelType
+        mm = get_model_manager()
+        mm.unload_model(ModelType.MANGA_OCR, force_gc=False)
+        mm.unload_model(ModelType.PADDLE_OCR_VL, force_gc=True)
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        pass
         
     pages_data = global_script.get("pages", {})
     if not pages_data:
@@ -1422,6 +1586,9 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
         return
         
     for img_name, items in pages_data.items():
+        if cancellation_manager and cancellation_manager.is_cancelled():
+            raise CancellationError("Process cancelled by user.")
+            
         img_path = input_dir / img_name
         if not img_path.exists():
             continue
@@ -1436,6 +1603,21 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
             processing_scale = 1.0
 
         log_message(f"Re-generating component masks for {img_name}...", always_print=True)
+        
+        try:
+            from core.ml.model_manager import get_model_manager, ModelType
+            
+            # Clear cache to prevent PyTorch memory fragmentation over time
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            ts_model = get_model_manager().get_text_segmentation_model()
+            text_prob_map = ts_model.inference(pil_image)
+            log_message("Generated text segmentation probability map", verbose=config.verbose)
+        except Exception as e:
+            log_message(f"Text segmentation failed: {e}", always_print=True)
+            
         bubble_data, text_free_boxes = detect_speech_bubbles(
             img_path, config.yolo_model_path, config.detection.confidence,
             device=config.device, seg_model=config.detection.seg_model,
@@ -1443,12 +1625,31 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
             bubble_detector_model=config.detection.bubble_detector_model
         )
         panels = detect_panels(img_path, config.detection.panel_confidence, config.device) if config.detection.use_panel_sorting else None
-        
+
+        # Free memory before Flux loads in process_outside_text
+        try:
+            from core.ml.model_manager import get_model_manager, ModelType
+            model_manager = get_model_manager()
+            model_manager.unload_model(ModelType.SAM2, force_gc=False)
+            model_manager.unload_model(ModelType.SAM3, force_gc=False)
+            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE, force_gc=False)
+            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False)
+            model_manager.unload_model(ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False)
+            model_manager.unload_model(ModelType.TEXT_SEGMENTATION, force_gc=True)
+            if 'ts_model' in locals():
+                del ts_model
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
         pil_image, outside_text_data = process_outside_text(
             pil_image, config, img_path, pil_image.format, verbose=config.verbose,
             bubble_data=bubble_data, text_free_boxes=text_free_boxes, panels=panels
-        )
-        
+        )        
         all_text_data = bubble_data + outside_text_data
         sorted_items = sort_bubbles_by_reading_order(all_text_data, config.translation.reading_direction, panels=panels)
         
@@ -1477,6 +1678,7 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
             flux_low_vram=config.outside_text.flux_low_vram,
             flux_luminance_correction=config.outside_text.flux_luminance_correction,
             bubble_detector_model=config.detection.bubble_detector_model,
+            text_segmentation_prob_map=text_prob_map,
         )
         
         pil_cleaned_image = cv2_to_pil(cleaned_image_cv)
@@ -1485,7 +1687,7 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
         
         main_min_font = scale_font_size(config.rendering.min_font_size, processing_scale, minimum=4, maximum=256)
         main_max_font = scale_font_size(config.rendering.max_font_size, processing_scale, minimum=main_min_font, maximum=384)
-        padding_pixels = scale_scalar(config.rendering.padding_pixels, processing_scale, minimum=1.0, maximum=80.0)
+        padding_pixels = config.rendering.padding_pixels
         osb_min_font = scale_font_size(config.outside_text.osb_min_font_size, processing_scale, minimum=4, maximum=512)
         osb_max_font = scale_font_size(config.outside_text.osb_max_font_size, processing_scale, minimum=osb_min_font, maximum=640)
         osb_outline_width = scale_scalar(config.outside_text.osb_outline_width, processing_scale, minimum=0.0, maximum=24.0)
@@ -1505,7 +1707,10 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                 line_spacing = config.outside_text.osb_line_spacing
                 use_ligs = config.outside_text.osb_use_ligatures
                 cleaned_mask = None
+                extended_collision_mask = None
                 text_bbox = None
+                stroke_width_ratio = 0.0
+                stroke_color_rgb = None
                 text_color_rgb = bubble.get("text_color_rgb", None)
                 if not text_color_rgb:
                     is_dark_text = bubble.get("is_dark_text", True)
@@ -1523,6 +1728,7 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                 render_info = bubble_render_info_map.get(tuple(bbox), {})
                 bubble_color_bgr = render_info.get("color", (255, 255, 255))
                 cleaned_mask = render_info.get("mask")
+                extended_collision_mask = render_info.get("base_mask")
                 
                 # 提取底层算出的最安全内接矩形！
                 text_bbox = render_info.get("text_bbox")
@@ -1534,8 +1740,19 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                     lum = 0.299 * bubble_color_bgr[2] + 0.587 * bubble_color_bgr[1] + 0.114 * bubble_color_bgr[0]
                     text_color_rgb = (0, 0, 0) if lum > 128 else (255, 255, 255)
                 outline_color = (0,0,0)
+                
+                stroke_width_ratio = render_info.get("stroke_width_ratio", 0.0)
+                stroke_color_bgr_val = render_info.get("stroke_color_bgr")
+                stroke_color_rgb = None
+                if stroke_color_bgr_val:
+                    stroke_color_rgb = (stroke_color_bgr_val[2], stroke_color_bgr_val[1], stroke_color_bgr_val[0])
+                
+            if config.rendering.pure_black_text:
+                text_color_rgb = (0, 0, 0)
+                outline_w = 0.0
+                stroke_width_ratio = 0.0
 
-            if is_originally_vertical and not is_osb:
+            if is_originally_vertical:
                 log_message(f"Using high-quality vertical engine for bubble {i+1}", verbose=config.verbose)
                 try:
                     font_variants = find_font_variants(font_dir, verbose=config.verbose)
@@ -1555,7 +1772,9 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                             line_spacing_mult=line_spacing,
                             ss_factor=config.rendering.supersampling_factor,
                             outline_width=outline_w, outline_color=outline_color,
-                            text_bbox=text_bbox # 传入关键参数！
+                            text_bbox=text_bbox,
+                            bubble_mask=extended_collision_mask if not is_osb else None,
+                            is_osb=is_osb # 传入关键参数！
                         )
                     else:
                         log_message(f"No valid .ttf found in {font_dir}", always_print=True)
@@ -1579,12 +1798,15 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                     bbox=bbox,
                     font_dir=font_dir,
                     cleaned_mask=cleaned_mask,
+                    extended_collision_mask=extended_collision_mask,
                     bubble_color_bgr=bubble_color_bgr,
                     config=render_config,
                     verbose=config.verbose,
                     bubble_id=str(i+1),
                     vertical_stack=False,
                     text_color_rgb=text_color_rgb,
+                    stroke_color_rgb=stroke_color_rgb,
+                    stroke_width_ratio=stroke_width_ratio,
                     raise_on_safe_error=True
                 )
             except Exception as e:
@@ -1597,9 +1819,10 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
                             fallback_font_path = str(f)
                             break
                     if fallback_font_path:
+                        fallback_size = max(min_font, min(box_w, box_h) * 0.15)
                         final_image = render_fallback_text_pil(
                             final_image, text, bbox, fallback_font_path, 
-                            min_font, text_color_rgb, outline_w, outline_color, text_bbox=text_bbox
+                            fallback_size, text_color_rgb, outline_w, outline_color, text_bbox=text_bbox
                         )
                 except Exception as fallback_e:
                     log_message(f"Fallback also failed: {fallback_e}", always_print=True)
@@ -1607,21 +1830,49 @@ def render_batch_from_script(input_dir, json_path, config, output_dir):
         output_file = output_dir / f"{img_path.stem}_translated{img_path.suffix}"
         save_image_with_compression(final_image, str(output_file), jpeg_quality=config.output.jpeg_quality)
         
+        # Free Flux at the end of the loop so the next image's SAM3 detection doesn't OOM
+        try:
+            from core.ml.model_manager import get_model_manager
+            mm = get_model_manager()
+            mm.unload_flux_kontext_models(verbose=config.verbose)
+            mm.unload_flux_kontext_sdnq_models(verbose=config.verbose)
+            mm.unload_flux_klein_models(verbose=config.verbose)
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        
     log_message("All images rendered successfully from script!", always_print=True)
     
-def run_advanced_batch_pipeline(input_dir, config, output_dir, mode="export_only"):
+def run_advanced_batch_pipeline(input_dir, config, output_dir, mode="export_only", cancellation_manager=None):
     from pathlib import Path
+    from core.ml.model_manager import get_model_manager
+    get_model_manager().set_hf_token(config.outside_text.huggingface_token)
     json_path = Path(output_dir) / "manga_script.json"
     original_txt = Path(output_dir) / "manga_script_original.txt"
     translated_txt = Path(output_dir) / "manga_script_translated.txt"
     
     if mode in ["export_only", "auto_api_full"]:
-        extract_batch_script(input_dir, config, output_dir)
-        
+        extract_batch_script(input_dir, config, output_dir, cancellation_manager=cancellation_manager)
+
+    if mode == "export_only":
+        import shutil
+        if original_txt.exists():
+            shutil.copy(original_txt, translated_txt)
+
     if mode == "auto_api_full":
+        if cancellation_manager and cancellation_manager.is_cancelled():
+            from utils.exceptions import CancellationError
+            raise CancellationError("Process cancelled by user.")
         auto_translate_script_api(original_txt, config, translated_txt)
+        if cancellation_manager and cancellation_manager.is_cancelled():
+            from utils.exceptions import CancellationError
+            raise CancellationError("Process cancelled by user.")
         parse_translated_txt(translated_txt, json_path)
-        render_batch_from_script(input_dir, json_path, config, output_dir)
+        render_batch_from_script(input_dir, json_path, config, output_dir, cancellation_manager=cancellation_manager)
         
     elif mode == "import_render":
         if not translated_txt.exists():
@@ -1630,4 +1881,4 @@ def run_advanced_batch_pipeline(input_dir, config, output_dir, mode="export_only
             raise FileNotFoundError("Error: Could not find manga_script.json. Please make sure you uploaded it in the UI.")
             
         parse_translated_txt(translated_txt, json_path)
-        render_batch_from_script(input_dir, json_path, config, output_dir)
+        render_batch_from_script(input_dir, json_path, config, output_dir, cancellation_manager=cancellation_manager)

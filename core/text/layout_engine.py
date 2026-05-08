@@ -8,6 +8,7 @@ import uharfbuzz as hb
 from core.text.text_processing import (
     STYLE_PATTERN,
     find_optimal_breaks_dp,
+    find_optimal_breaks_contour_dp,
     parse_styled_segments,
     tokenize_styled_text,
     try_hyphenate_word,
@@ -136,6 +137,9 @@ def check_fit(
     word_width_cache: Optional[Dict[Tuple[str, int], float]] = None,
     verbose: bool = False,
     detach_trailing_ellipsis: bool = True,
+    collision_mask: Optional[np.ndarray] = None,
+    target_center: Optional[Tuple[float, float]] = None,
+    mask_offset: Tuple[float, float] = (0.0, 0.0),
 ) -> Optional[Dict]:
     """Check if text fits within the given dimensions at the specified font size.
 
@@ -155,6 +159,9 @@ def check_fit(
         badness_exponent: Exponent for line breaking badness calculation
         word_width_cache: Optional cache for word widths
         verbose: Whether to print detailed logs
+        detach_trailing_ellipsis: Whether to treat trailing ellipsis as separate token
+        collision_mask: Optional binary mask of the safe area for contour wrapping
+        target_center: Optional (x, y) coordinates of the text optical center for contour wrapping
 
     Returns:
         Dict containing fit data if successful, None if doesn't fit
@@ -321,30 +328,159 @@ def check_fit(
             " ", font_size, loaded_hb_faces, features_to_enable
         )
 
-        wrapped_lines_text = find_optimal_breaks_dp(
-            augmented_tokens,
-            max_render_width,
-            word_width_func,
-            space_width,
-            badness_exponent,
-            hyphen_penalty,
-            detach_trailing_ellipsis,
-        )
+        wrapped_lines_text = None
+
+        if collision_mask is not None and target_center is not None:
+            # TRUE CONTOUR WRAPPING MODE
+            target_center_x, target_center_y = target_center
+            mask_h, mask_w = collision_mask.shape
+
+            best_contour_lines = None
+            best_contour_centers = None
+            best_contour_cost = float('inf')
+
+            # Test all possible line counts from 1 to min(N, max_height/line_height)
+            max_lines_by_height = max(1, int(max_render_height / single_line_height))
+            max_k = min(len(augmented_tokens), max_lines_by_height)
+
+            for K in range(1, max_k + 1):
+                total_height = K * single_line_height
+                start_y = target_center_y - total_height / 2.0
+
+                # If the entire block exceeds the mask vertically, skip
+                if start_y < 0 or start_y + total_height > mask_h:
+                    continue
+
+                anchor_k = int((target_center_y - start_y) / single_line_height)
+                anchor_k = max(0, min(K - 1, anchor_k))
+
+                max_widths_for_k = [0.0] * K
+                line_centers_for_k = [float(target_center_x)] * K
+                valid_k = True
+
+                def compute_line_bounds(k_idx: int, prev_cx: int) -> Tuple[int, int, int]:
+                    # Adjust start_y by offset
+                    rel_start_y = start_y - mask_offset[1]
+                    y_points = [
+                        int(max(0, min(mask_h - 1, rel_start_y + (k_idx + 0.2) * single_line_height))),
+                        int(max(0, min(mask_h - 1, rel_start_y + (k_idx + 0.5) * single_line_height))),
+                        int(max(0, min(mask_h - 1, rel_start_y + (k_idx + 0.8) * single_line_height)))
+                    ]
+
+                    max_lw = 0
+                    min_rw = mask_w - 1
+                    curr_cx = int(prev_cx - mask_offset[0])
+
+                    if curr_cx < 0 or curr_cx >= mask_w:
+                        return -1, -1, -1
+
+                    for py in y_points:
+                        if collision_mask[py, curr_cx] == 0:
+                            safe_pixels = np.where(collision_mask[py, :] == 255)[0]
+                            if safe_pixels.size == 0:
+                                return -1, -1, -1
+                            curr_cx = int(safe_pixels[np.argmin(np.abs(safe_pixels - curr_cx))])
+
+                        left_zeros = np.where(collision_mask[py, 0:curr_cx] == 0)[0]
+                        lw = int(left_zeros.max()) if left_zeros.size > 0 else 0
+
+                        right_zeros = np.where(collision_mask[py, curr_cx:] == 0)[0]
+                        rw = int(right_zeros.min() + curr_cx) if right_zeros.size > 0 else mask_w - 1
+
+                        max_lw = max(max_lw, lw)
+                        min_rw = min(min_rw, rw)
+
+                    if max_lw >= min_rw:
+                        return -1, -1, -1
+
+                    # Absolute max_lw and min_rw
+                    abs_max_lw = max_lw + mask_offset[0]
+                    abs_min_rw = min_rw + mask_offset[0]
+
+                    if abs_min_rw <= abs_max_lw:
+                        return -1, -1, -1
+
+                    # Center is simply the midpoint of the available space
+                    new_center = (abs_max_lw + abs_min_rw) / 2
+
+                    return int(abs_max_lw) + 1, int(abs_min_rw) - 1, int(new_center)
+                # Downward trace from anchor
+                current_cx = int(target_center_x)
+                if current_cx < 0 or current_cx >= mask_w:
+                    current_cx = max(0, min(mask_w - 1, current_cx))
+
+                for k in range(anchor_k, K):
+                    lw, rw, new_cx = compute_line_bounds(k, current_cx)
+                    if new_cx == -1:
+                        valid_k = False
+                        break
+                    max_widths_for_k[k] = float(rw - lw)
+                    line_centers_for_k[k] = float(new_cx)
+                    current_cx = new_cx
+
+                # Upward trace from anchor
+                if valid_k and anchor_k > 0:
+                    current_cx = int(line_centers_for_k[anchor_k])
+                    for k in range(anchor_k - 1, -1, -1):
+                        lw, rw, new_cx = compute_line_bounds(k, current_cx)
+                        if new_cx == -1:
+                            valid_k = False
+                            break
+                        max_widths_for_k[k] = float(rw - lw)
+                        line_centers_for_k[k] = float(new_cx)
+                        current_cx = new_cx
+
+                if not valid_k:
+                    continue
+
+                result = find_optimal_breaks_contour_dp(
+                    augmented_tokens,
+                    max_widths_for_k,
+                    word_width_func,
+                    space_width,
+                    badness_exponent,
+                    hyphen_penalty,
+                    detach_trailing_ellipsis,
+                )
+
+                if result:
+                    lines_text, cost = result
+                    if cost < best_contour_cost:
+                        best_contour_cost = cost
+                        best_contour_lines = lines_text
+                        best_contour_centers = line_centers_for_k.copy()
+
+            wrapped_lines_text = best_contour_lines
+        else:
+            # FALLBACK RECTANGULAR MODE
+            wrapped_lines_text = find_optimal_breaks_dp(
+                augmented_tokens,
+                max_render_width,
+                word_width_func,
+                space_width,
+                badness_exponent,
+                hyphen_penalty,
+                detach_trailing_ellipsis,
+            )
 
         if not wrapped_lines_text:
             return None
 
         current_max_line_width = 0
         lines_data_at_size = []
-        for line_text_with_markers in wrapped_lines_text:
+        for i, line_text_with_markers in enumerate(wrapped_lines_text):
             width = calculate_styled_line_width(
                 line_text_with_markers, font_size, loaded_hb_faces, features_to_enable
             )
+
+            center_x = target_center[0] if target_center else 0.0
+
             lines_data_at_size.append(
-                {"text_with_markers": line_text_with_markers, "width": width}
+                {"text_with_markers": line_text_with_markers, "width": width, "center_x": float(center_x)}
             )
             current_max_line_width = max(current_max_line_width, width)
-
+        for line in lines_data_at_size:
+            line["target_width"] = current_max_line_width
         total_block_height = (-metrics.fAscent + metrics.fDescent) + (
             len(wrapped_lines_text) - 1
         ) * single_line_height
@@ -356,18 +492,31 @@ def check_fit(
                 verbose=verbose,
             )
 
-        if (
+        fits_bounds = (
             current_max_line_width <= max_render_width
             and total_block_height <= max_render_height
-        ):
-            if verbose:
-                log_message(f"Size {font_size} fits", verbose=verbose)
-            return {
-                "lines": lines_data_at_size,
-                "metrics": metrics,
-                "max_line_width": current_max_line_width,
-                "line_height": single_line_height,
-            }
+        )
+
+        if fits_bounds or (collision_mask is not None and target_center is not None):
+            has_collision = False
+            if collision_mask is not None and target_center is not None:
+                has_collision = _check_collision(
+                    lines_data_at_size,
+                    target_center,
+                    collision_mask,
+                    single_line_height,
+                    mask_offset,
+                )
+
+            if not has_collision:
+                if verbose:
+                    log_message(f"Size {font_size} fits", verbose=verbose)
+                return {
+                    "lines": lines_data_at_size,
+                    "metrics": metrics,
+                    "max_line_width": current_max_line_width,
+                    "line_height": single_line_height,
+                }
 
         return None
 
@@ -379,46 +528,59 @@ def check_fit(
 
 def _check_collision(
     lines_data: List[Dict],
-    box_top_left: Tuple[int, int],
-    cleaned_mask: np.ndarray,
+    target_center: Tuple[float, float],
+    collision_mask: np.ndarray,
     line_height: float,
-    render_size: Tuple[float, float],
+    mask_offset: Tuple[float, float] = (0.0, 0.0),
 ) -> bool:
     """
     Check if any text pixel overlaps with background (0) in mask.
 
     Args:
         lines_data: List of dictionaries containing line width and text.
-        box_top_left: (x, y) coordinates of the bounding box top-left corner.
-        cleaned_mask: Binary mask of the bubble (0=background, 255=bubble).
+        target_center: (x, y) coordinates of the true optical center.
+        collision_mask: Binary mask of the safe area (0=background, 255=bubble).
         line_height: Height of a single line of text.
-        render_size: (width, height) of the render box.
 
     Returns:
         True if collision detected, False otherwise.
     """
-    box_x, box_y = box_top_left
-    mask_h, mask_w = cleaned_mask.shape
-    max_w, max_h = render_size
+    target_center_x, target_center_y = target_center
+    mask_h, mask_w = collision_mask.shape
 
     total_text_height = len(lines_data) * line_height
-    start_y = box_y + (max_h - total_text_height) / 2
+    start_y = target_center_y - total_text_height / 2.0
 
     current_y = start_y
     for line in lines_data:
         line_w = line["width"]
-        line_x = box_x + (max_w - line_w) / 2
+        line_cx = line.get("center_x", target_center_x)
+        line_x = line_cx - line_w / 2.0
 
         y1, y2 = int(current_y), int(current_y + line_height)
         x1, x2 = int(line_x), int(line_x + line_w)
 
-        points_to_check = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
+        # Inset corners to allow text to naturally fit into curved bubbles without extreme shrinking.
+        # Since the mask is already padded (config.padding_pixels), we don't need strict rectangular corners.
+        inset_x = int(line_w * 0.1)
+        inset_y = int(line_height * 0.2)
+
+        points_to_check = [
+            (x1 + inset_x, y1 + inset_y), (x2 - inset_x, y1 + inset_y),
+            (x1 + inset_x, y2 - inset_y), (x2 - inset_x, y2 - inset_y),
+            (x1 + int(line_w / 2), y1), (x1 + int(line_w / 2), y2),
+            (x1, y1 + int(line_height / 2)), (x2, y1 + int(line_height / 2))
+        ]
 
         for px, py in points_to_check:
-            px = max(0, min(px, mask_w - 1))
-            py = max(0, min(py, mask_h - 1))
+            # Apply mask offset before checking collision mask
+            px = int(px - mask_offset[0])
+            py = int(py - mask_offset[1])
 
-            if cleaned_mask[py, px] == 0:
+            if px < 0 or px >= mask_w or py < 0 or py >= mask_h:
+                continue
+
+            if collision_mask[py, px] == 0:
                 return True
 
         current_y += line_height
@@ -443,9 +605,10 @@ def find_optimal_layout(
     badness_exponent: float = 3.0,
     verbose: bool = False,
     bubble_id: Optional[str] = None,
-    cleaned_mask: Optional[np.ndarray] = None,
-    box_top_left: Optional[Tuple[int, int]] = None,
+    collision_mask: Optional[np.ndarray] = None,
+    target_center: Optional[Tuple[float, float]] = None,
     detach_trailing_ellipsis: bool = True,
+    mask_offset: Tuple[float, float] = (0.0, 0.0),
 ) -> Dict:
     """Find the optimal font size and layout for text within given dimensions.
 
@@ -468,8 +631,8 @@ def find_optimal_layout(
         badness_exponent: Exponent for line breaking badness calculation
         verbose: Whether to print detailed logs
         bubble_id: Optional identifier for the bubble (for logging purposes)
-        cleaned_mask: Optional binary mask of the bubble for collision detection
-        box_top_left: Optional (x, y) coordinates of the bounding box top-left corner
+        collision_mask: Optional binary mask of the bubble's safe area for collision detection
+        target_center: Optional (x, y) coordinates of the text's target optical center
 
     Returns:
         Dictionary containing layout data (font_size, lines, metrics, etc.)
@@ -494,8 +657,9 @@ def find_optimal_layout(
 
     word_width_cache: Dict[Tuple[str, int], float] = {}
 
-    low = min_font_size
-    high = max_font_size
+    low = 1
+    # Smart font size: dynamically scale up to the container's shortest dimension
+    high = int(min(max_render_width, max_render_height))
 
     while low <= high:
         mid = (low + high) // 2
@@ -505,67 +669,47 @@ def find_optimal_layout(
         log_message(f"Testing size {mid}", verbose=verbose)
 
         succeeded_at_current_size = False
-        current_width_attempt = max_render_width
-        max_squeezes = 3 if cleaned_mask is not None else 1
 
-        for _ in range(max_squeezes):
-            fit_data = check_fit(
-                mid,
-                clean_text,
-                current_width_attempt,
-                max_render_height,
-                regular_hb_face,
-                regular_typeface,
-                loaded_hb_faces,
-                features_to_enable,
-                line_spacing_mult,
-                hyphenate_before_scaling,
-                hyphen_penalty,
-                hyphenation_min_word_length,
-                badness_exponent,
-                word_width_cache,
-                verbose,
-                detach_trailing_ellipsis,
-            )
+        fit_data = check_fit(
+            mid,
+            clean_text,
+            max_render_width,
+            max_render_height,
+            regular_hb_face,
+            regular_typeface,
+            loaded_hb_faces,
+            features_to_enable,
+            line_spacing_mult,
+            hyphenate_before_scaling,
+            hyphen_penalty,
+            hyphenation_min_word_length,
+            badness_exponent,
+            word_width_cache,
+            verbose,
+            detach_trailing_ellipsis,
+            collision_mask=collision_mask,
+            target_center=target_center,
+            mask_offset=mask_offset,
+        )
 
-            if fit_data is None:
-                # Squeezing narrower won't help (only makes it taller)
-                break
-
-            if cleaned_mask is not None and box_top_left is not None:
+        if fit_data is not None:
+            has_collision = False
+            if collision_mask is not None and target_center is not None:
                 has_collision = _check_collision(
                     fit_data["lines"],
-                    box_top_left,
-                    cleaned_mask,
+                    target_center,
+                    collision_mask,
                     fit_data["line_height"],
-                    (current_width_attempt, max_render_height),
+                    mask_offset,
                 )
 
-                if not has_collision:
-                    best_fit_size = mid
-                    best_fit_lines_data = fit_data["lines"]
-                    best_fit_metrics = fit_data["metrics"]
-                    best_fit_max_line_width = fit_data["max_line_width"]
-                    best_fit_line_height = fit_data["line_height"]
-
-                    succeeded_at_current_size = True
-                    break
-                else:
-                    if verbose:
-                        log_message(
-                            f"Collision at size {mid} width {current_width_attempt:.0f}, squeezing...",
-                            verbose=verbose,
-                        )
-                    current_width_attempt *= 0.90
-                    continue
-            else:
+            if not has_collision:
                 best_fit_size = mid
                 best_fit_lines_data = fit_data["lines"]
                 best_fit_metrics = fit_data["metrics"]
                 best_fit_max_line_width = fit_data["max_line_width"]
                 best_fit_line_height = fit_data["line_height"]
                 succeeded_at_current_size = True
-                break
 
         if succeeded_at_current_size:
             low = mid + 1
@@ -574,19 +718,44 @@ def find_optimal_layout(
 
     if best_fit_size == -1:
         log_message(
-            f"Text too large for bubble at min size {min_font_size}: '{clean_text[:30]}'",
+            f"Text too large for bubble even at size 1: '{clean_text[:30]}'. Forcing overflow layout.",
             always_print=True,
         )
-        raise RenderingError(
-            f"Text too large for bubble at minimum font size {min_font_size}"
+        # Force a layout at size 4 with large bounds so Skia can still render it without DP breaking
+        forced_fit = check_fit(
+            4,
+            clean_text,
+            99999.0,
+            99999.0,
+            regular_hb_face,
+            regular_typeface,
+            loaded_hb_faces,
+            features_to_enable,
+            line_spacing_mult,
+            hyphenate_before_scaling,
+            hyphen_penalty,
+            hyphenation_min_word_length,
+            badness_exponent,
+            word_width_cache,
+            verbose,
+            detach_trailing_ellipsis,
+            collision_mask=None,
+            target_center=target_center,
+            mask_offset=mask_offset,
         )
 
-    if best_fit_size < max_font_size:
-        bubble_desc = f"bubble {bubble_id}" if bubble_id else "bubble"
-        log_message(
-            f"Shrinking text in {bubble_desc} to size {best_fit_size}",
-            verbose=verbose,
-        )
+        if forced_fit is not None:
+            return {
+                "font_size": 4,
+                "lines": forced_fit["lines"],
+                "metrics": forced_fit["metrics"],
+                "max_line_width": forced_fit["max_line_width"],
+                "line_height": forced_fit["line_height"],
+            }
+        else:
+            raise RenderingError(
+                "Text too large for bubble and fallback failed"
+            )
 
     return {
         "font_size": best_fit_size,

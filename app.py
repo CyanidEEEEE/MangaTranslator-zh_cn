@@ -1,8 +1,17 @@
 import argparse
 import os
 import sys
+import warnings
 from pathlib import Path
 from threading import Thread
+
+# Add project root to sys.path to support portable embedded Python execution
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 
 import gradio as gr
 import torch

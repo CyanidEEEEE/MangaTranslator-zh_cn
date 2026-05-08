@@ -4,7 +4,7 @@ import threading
 import urllib.request
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -42,6 +42,8 @@ class ModelType(Enum):
     FLUX_KONTEXT_SDNQ_PIPELINE = "flux_kontext_sdnq_pipeline"
     FLUX_KLEIN_9B_PIPELINE = "flux_klein_9b_pipeline"
     FLUX_KLEIN_4B_PIPELINE = "flux_klein_4b_pipeline"
+    TEXT_SEGMENTATION = "text_segmentation"
+    FONT_DETECTOR = "font_detector"
 
 
 class ModelManager:
@@ -687,8 +689,8 @@ class ModelManager:
                             torch_dtype=dtype,
                             attn_implementation=attn_impl,
                             token=token,
+                            device_map=self.device,
                         )
-                        .to(self.device)
                         .eval()
                     )
                     log_message(
@@ -820,6 +822,11 @@ class ModelManager:
                 )
 
             log_message("Loading Flux Kontext inpainting models...", verbose=verbose)
+
+            # Automatically free up VRAM before loading massive Flux models
+            self.unload_ocr_models(verbose=verbose)
+            self.unload_upscale_models(verbose=verbose)
+
             try:
                 # Lazy imports for Nunchaku and diffusers
                 from diffusers import FluxKontextPipeline
@@ -918,6 +925,10 @@ class ModelManager:
                 "Loading Flux.1 Kontext SDNQ model (cross-platform)...", verbose=verbose
             )
 
+            # Automatically free up VRAM before loading massive Flux models
+            self.unload_ocr_models(verbose=verbose)
+            self.unload_upscale_models(verbose=verbose)
+
             try:
                 from diffusers import FluxKontextPipeline
                 from sdnq import SDNQConfig  # noqa: F401 - registers into diffusers
@@ -948,6 +959,12 @@ class ModelManager:
                     pipeline.text_encoder_2 = apply_sdnq_options_to_model(
                         pipeline.text_encoder_2, use_quantized_matmul=True
                     )
+
+                # Auto-detect VRAM to prevent OOM on 8GB cards
+                if torch.cuda.is_available():
+                    total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    if total_vram <= 6.0:
+                        low_vram = True
 
                 if low_vram:
                     log_message(
@@ -982,20 +999,7 @@ class ModelManager:
         low_vram: bool = False,
         verbose: bool = False,
     ):
-        """Load a Flux.2 Klein model pipeline using SDNQ quantization.
-
-        Both 4B and 9B use Disty0's SDNQ 4-bit quantized models.
-        Supports AMD, Intel ARC, and NVIDIA GPUs with INT8 MatMul optimization.
-
-        Args:
-            model_type: ModelType.FLUX_KLEIN_9B_PIPELINE or FLUX_KLEIN_4B_PIPELINE
-            variant: "9b" or "4b" for logging
-            low_vram: If True, use sequential CPU offload (slower but lower VRAM)
-            verbose: Whether to print verbose logging
-
-        Returns:
-            The loaded Flux2KleinPipeline
-        """
+        """Load a Flux.2 Klein model pipeline using SDNQ quantization."""
         with self._lock:
             if self.is_loaded(model_type):
                 return self.models[model_type]
@@ -1003,6 +1007,10 @@ class ModelManager:
             log_message(
                 f"Loading Flux.2 Klein {variant.upper()} model...", verbose=verbose
             )
+
+            # Automatically free up VRAM before loading massive Flux models
+            self.unload_ocr_models(verbose=verbose)
+            self.unload_upscale_models(verbose=verbose)
 
             try:
                 from diffusers import Flux2KleinPipeline
@@ -1034,6 +1042,12 @@ class ModelManager:
                     pipeline.text_encoder = apply_sdnq_options_to_model(
                         pipeline.text_encoder, use_quantized_matmul=True
                     )
+
+                # Auto-detect VRAM to prevent OOM on 8GB cards
+                if torch.cuda.is_available():
+                    total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    if total_vram <= 6.0:
+                        low_vram = True
 
                 if low_vram:
                     log_message(
@@ -1105,8 +1119,7 @@ class ModelManager:
                 return
 
             log_message(f"Unloading {model_type.value}...", verbose=verbose)
-            del self.models[model_type]
-            self.models[model_type] = None
+            self.models.pop(model_type, None)
 
             if force_gc:
                 empty_cache(self.device)
@@ -1204,10 +1217,7 @@ class ModelManager:
         """Unload all models and free all GPU memory."""
         with self._lock:
             log_message("Unloading all models...", verbose=verbose)
-            for model_type in list(self.models.keys()):
-                if self.is_loaded(model_type):
-                    del self.models[model_type]
-                    self.models[model_type] = None
+            self.models.clear()
 
             empty_cache(self.device)
             log_message("All models unloaded.", verbose=verbose)
@@ -1232,9 +1242,39 @@ class ModelManager:
         """Release unused GPU memory from PyTorch's CUDA cache."""
         empty_cache(self.device)
 
+    def get_text_segmentation_model(self) -> "Any":
+        """Get or load the text segmentation model."""
+        with self._lock:
+            if ModelType.TEXT_SEGMENTATION not in self.models:
+                try:
+                    log_message("Loading Manga Text Segmentation 2025 model...", always_print=True)
+                    from core.ml.text_segmentation import MangaTextSegmenter
+                    model = MangaTextSegmenter(device=str(self.device))
+                    self.models[ModelType.TEXT_SEGMENTATION] = model
+                    log_message("Manga Text Segmentation 2025 loaded successfully.", always_print=True)
+                except Exception as e:
+                    raise ModelError(f"Failed to load text segmentation model: {e}")
+            return self.models[ModelType.TEXT_SEGMENTATION]
+
+    def get_font_detector_model(self) -> "Any":
+        """Get or load the font detector model."""
+        with self._lock:
+            if ModelType.FONT_DETECTOR not in self.models:
+                try:
+                    log_message("Loading YuzuMarker Font Detection model...", always_print=True)
+                    from core.ml.font_detection import FontDetector
+                    model = FontDetector(device=str(self.device))
+                    self.models[ModelType.FONT_DETECTOR] = model
+                    log_message("YuzuMarker Font Detection loaded successfully.", always_print=True)
+                except Exception as e:
+                    raise ModelError(f"Failed to load font detector model: {e}")
+            return self.models[ModelType.FONT_DETECTOR]
 
 # Global singleton instance
 _model_manager = None
+
+
+
 
 
 def get_model_manager() -> ModelManager:

@@ -461,3 +461,108 @@ def find_optimal_breaks_dp(
 
     except Exception:
         return None
+
+
+def find_optimal_breaks_contour_dp(
+    tokens: List[str],
+    max_widths: List[float],
+    word_width_func: Callable[[str], float],
+    space_width: float,
+    badness_exponent: float = 3.0,
+    hyphen_penalty: float = 1000.0,
+    detach_trailing_ellipsis: bool = True,
+) -> Optional[Tuple[List[str], float]]:
+    """
+    2D Knuth-Plass style DP for contour wrapping.
+    Finds the optimal line breaks forcing exactly len(max_widths) lines.
+
+    Args:
+        tokens: List of word tokens
+        max_widths: List of maximum allowed width for each specific line
+        word_width_func: Function that takes a word and returns its width
+        space_width: Width of a space character
+        badness_exponent: Exponent for badness calculation
+        hyphen_penalty: Penalty for lines ending with hyphens
+        detach_trailing_ellipsis: Whether to treat trailing ellipsis as separate token
+
+    Returns:
+        Tuple of (List of lines, total badness cost) if successful, None otherwise
+    """
+    try:
+        K = len(max_widths)
+        if not tokens:
+            return [], 0.0
+
+        N = len(tokens)
+        if K == 0 or K > N:
+            return None
+
+        # Calculate widths for all tokens
+        token_w: List[float] = [word_width_func(t) for t in tokens]
+
+        # dp[k][i] = min cost to pack tokens 0..i-1 into k lines
+        min_cost = [[float("inf")] * (N + 1) for _ in range(K + 1)]
+        path = [[0] * (N + 1) for _ in range(K + 1)]
+        min_cost[0][0] = 0.0
+
+        for k in range(1, K + 1):
+            max_w = max_widths[k - 1]
+            if max_w <= 0:
+                continue
+
+            for i in range(k, N + 1):
+                line_width = 0.0
+                for j in range(i - 1, k - 2, -1):
+                    if j < 0:
+                        break
+
+                    # Add space only if needed between this token and the previous one on the line
+                    if j < i - 1:
+                        if _needs_space_between(
+                            tokens[j], tokens[j + 1], detach_trailing_ellipsis
+                        ):
+                            line_width += space_width
+                    line_width += token_w[j]
+
+                    if line_width > max_w:
+                        break
+
+                    if min_cost[k - 1][j] == float("inf"):
+                        continue
+
+                    slack = max_w - line_width
+                    badness = pow(slack, badness_exponent)
+
+                    # Add hyphen penalty if line ends with hyphen
+                    last_token = tokens[i - 1] if i > 0 else ""
+                    ends_with_hyphen = last_token.endswith("-")
+                    if not ends_with_hyphen:
+                        styled_match = STYLE_PATTERN.match(last_token)
+                        if styled_match:
+                            ends_with_hyphen = styled_match.group(2).endswith("-")
+
+                    if ends_with_hyphen and k < K:
+                        badness += hyphen_penalty
+
+                    total_cost = min_cost[k - 1][j] + badness
+                    if total_cost < min_cost[k][i]:
+                        min_cost[k][i] = total_cost
+                        path[k][i] = j
+
+        if not np.isfinite(min_cost[K][N]):
+            return None
+
+        lines: List[str] = []
+        current_break = N
+        for k in range(K, 0, -1):
+            prev_break = path[k][current_break]
+            line = _join_tokens_smart(
+                tokens[prev_break:current_break], detach_trailing_ellipsis
+            )
+            lines.insert(0, line)
+            current_break = prev_break
+
+        return lines, min_cost[K][N]
+
+    except Exception:
+        return None

@@ -12,6 +12,11 @@ from core.device import empty_cache, get_best_device, get_best_dtype
 from core.ml.model_manager import get_model_manager
 from utils.logging import log_message
 
+# Global cache for Flux prompt embeddings to bypass Text Encoder and save massive VRAM
+_flux_cached_prompt_embeds = None
+_flux_cached_pooled_prompt_embeds = None
+_flux_cached_text_ids = None
+
 # Blur Parameters
 BLUR_SCALE_FACTOR = (
     0.1  # Multiplier for bounding box dimensions to calculate blur radius
@@ -78,13 +83,39 @@ class FluxKontextInpainter:
             (1568, 672),
         ]
 
+        # Auto-detect VRAM to scale down resolution for 8GB cards and avoid OOM during activations
+        import torch
+        if torch.cuda.is_available():
+            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if total_vram <= 8.5:
+                # ~768x768 max for 8GB cards
+                self.PREFERED_KONTEXT_RESOLUTIONS = [
+                    (512, 1152),
+                    (544, 1088),
+                    (576, 1024),
+                    (608, 960),
+                    (640, 928),
+                    (672, 864),
+                    (704, 832),
+                    (736, 800),
+                    (768, 768),
+                    (800, 736),
+                    (832, 704),
+                    (864, 672),
+                    (928, 640),
+                    (960, 608),
+                    (1024, 576),
+                    (1088, 544),
+                    (1152, 512),
+                ]
+
         self.pipeline = None
         self.transformer = None
         self.text_encoder_2 = None
 
         # Fixed parameters optimized for text removal
         self.guidance_scale = FLUX_GUIDANCE_SCALE
-        self.prompt = "Remove all text."
+        self.prompt = "Remove all text, completely erase all English letters, words, Japanese characters (Kanji, Hiragana, Katakana), and any floating strokes, furigana or ink dots. Preserve manga screentones, background textures, and line art perfectly smooth and clean."
         self.context_padding_ratio = CONTEXT_PADDING_RATIO
         self.max_context_padding = MAX_CONTEXT_PADDING
 
@@ -510,6 +541,7 @@ class FluxKontextInpainter:
         Returns:
             PIL.Image: The inpainted image
         """
+        global _flux_cached_prompt_embeds, _flux_cached_pooled_prompt_embeds
         mask_np = np.asarray(mask_np)
         if mask_np.dtype != bool:
             mask_np = mask_np.astype(bool)
@@ -706,8 +738,21 @@ class FluxKontextInpainter:
                     with torch.inference_mode():
                         gen_device = "cpu" if self.low_vram else self.DEVICE
                         gen = torch.Generator(device=gen_device).manual_seed(seed)
+
+                        if _flux_cached_prompt_embeds is None:
+                            log_message("  - Computing and caching Flux SDNQ prompt embeddings (only once)...", verbose=verbose)
+                            emb_out = self.pipeline.encode_prompt(
+                                prompt=self.prompt,
+                                prompt_2=None,
+                                device=self.DEVICE,
+                            )
+                            _flux_cached_prompt_embeds = emb_out[0].cpu()
+                            _flux_cached_pooled_prompt_embeds = emb_out[1].cpu()
+                            empty_cache(self.DEVICE)
+
                         out = self.pipeline(
-                            prompt=self.prompt,
+                            prompt_embeds=_flux_cached_prompt_embeds.to(self.DEVICE),
+                            pooled_prompt_embeds=_flux_cached_pooled_prompt_embeds.to(self.DEVICE),
                             image=image_scaled_for_inference_pil,
                             width=inference_width,
                             height=inference_height,
@@ -731,26 +776,23 @@ class FluxKontextInpainter:
                             )
                         )
                 else:
-                    self.pipeline.text_encoder_2.to(self.DEVICE)
-
-                    prompt_embeds, pooled_prompt_embeds, _ = (
-                        self.pipeline.encode_prompt(
+                    if _flux_cached_prompt_embeds is None:
+                        log_message("  - Computing and caching Flux Nunchaku prompt embeddings (only once)...", verbose=verbose)
+                        emb_out = self.pipeline.encode_prompt(
                             prompt=self.prompt,
                             prompt_2=None,
                             device=self.DEVICE,
                         )
-                    )
+                        _flux_cached_prompt_embeds = emb_out[0].cpu()
+                        _flux_cached_pooled_prompt_embeds = emb_out[1].cpu()
 
-                    self.pipeline.text_encoder_2.to("cpu")
                     empty_cache(self.DEVICE)
-
-                    self.pipeline.transformer.to(self.DEVICE)
 
                     with torch.inference_mode():
                         gen = torch.Generator(device=self.DEVICE).manual_seed(seed)
                         out = self.pipeline(
-                            prompt_embeds=prompt_embeds,
-                            pooled_prompt_embeds=pooled_prompt_embeds,
+                            prompt_embeds=_flux_cached_prompt_embeds.to(self.DEVICE),
+                            pooled_prompt_embeds=_flux_cached_pooled_prompt_embeds.to(self.DEVICE),
                             image=image_scaled_for_inference_pil,
                             width=inference_width,
                             height=inference_height,
@@ -823,10 +865,11 @@ class FluxKleinInpainter:
     KLEIN_DEFAULT_STEPS = 4  # Recommended default
     KLEIN_GUIDANCE_SCALE = 1.0  # Fixed CFG for Klein
     KLEIN_PROMPT = (
-        "Remove all text. Preserve all character line art, screentones, panel borders, "
-        "and background details exactly as they appear. Maintain the original black-and-white "
-        "contrast and shading, ensuring character expressions and environmental textures "
-        "remain unchanged while leaving the text areas completely blank."
+        "Remove all text, strictly erase all English letters, words, Japanese characters (Kanji, Hiragana, Katakana), "
+        "furigana (ruby characters), scattered strokes, and floating ink spots. Preserve all character line art, "
+        "screentones, panel borders, and background details exactly as they appear without any watermarks. "
+        "Maintain the original black-and-white contrast and shading, ensuring character expressions "
+        "and environmental textures remain perfectly unchanged while leaving the text areas completely clean."
     )
 
     # Resolution constraints: 64x64 to 2048x2048, multiple of 16
@@ -1007,7 +1050,7 @@ class FluxKleinInpainter:
         """
         orig_w, orig_h = image_pil.size
         current_pixels = orig_w * orig_h
-        target_pixels = 1_048_576  # 2^20 = 1024x1024
+        target_pixels = 1_048_576  # Default ~1024x1024
 
         if current_pixels > 0:
             scale = math.sqrt(target_pixels / current_pixels)
@@ -1055,6 +1098,7 @@ class FluxKleinInpainter:
         Returns:
             PIL.Image: The inpainted image
         """
+        global _flux_cached_prompt_embeds, _flux_cached_pooled_prompt_embeds
         from scipy.ndimage import distance_transform_edt
 
         mask_np = np.asarray(mask_np)
@@ -1224,8 +1268,20 @@ class FluxKleinInpainter:
             with self.manager.flux_inference_lock:
                 with torch.inference_mode():
                     gen = torch.Generator(device=self.DEVICE).manual_seed(seed)
+
+                    if _flux_cached_prompt_embeds is None:
+                        log_message("  - Computing and caching Flux Klein prompt embeddings (only once)...", verbose=verbose)
+                        emb_out = self.pipeline.encode_prompt(
+                            prompt=self.KLEIN_PROMPT,
+                            device=self.DEVICE,
+                        )
+                        _flux_cached_prompt_embeds = emb_out[0].cpu()
+                        _flux_cached_pooled_prompt_embeds = emb_out[1].cpu()
+
+                        empty_cache(self.DEVICE)
+
                     out = self.pipeline(
-                        prompt=self.KLEIN_PROMPT,
+                        prompt_embeds=_flux_cached_prompt_embeds.to(self.DEVICE),
                         image=inference_image,
                         height=inference_h,
                         width=inference_w,

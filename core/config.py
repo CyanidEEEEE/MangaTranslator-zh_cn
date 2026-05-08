@@ -98,17 +98,18 @@ class RenderingConfig:
     """Configuration for rendering translated text."""
 
     font_dir: str = "./fonts"
-    max_font_size: int = 16
-    min_font_size: int = 8
+    max_font_size: int = 64
+    min_font_size: int = 4
     line_spacing_mult: float = 1.0
     use_subpixel_rendering: bool = False
     font_hinting: str = "none"
     use_ligatures: bool = False
+    pure_black_text: bool = False
     hyphenate_before_scaling: bool = True
     hyphen_penalty: float = 1000.0
     hyphenation_min_word_length: int = 8
     badness_exponent: float = 3.0
-    padding_pixels: float = 5.0
+    padding_pixels: float = 15.0
     outline_width: float = 0.0
     supersampling_factor: int = 4
     detach_trailing_ellipsis: bool = True
@@ -136,15 +137,18 @@ class OutsideTextConfig:
     flux_residual_diff_threshold: float = 0.15
     osb_confidence: float = 0.6
     osb_font_dir: Optional[str] = None  # None = use main font as fallback
-    osb_max_font_size: int = 64
-    osb_min_font_size: int = 10
+    osb_max_font_size: int = 150
+    osb_min_font_size: int = 4
     osb_use_ligatures: bool = False
     osb_outline_width: float = 3.0
     osb_line_spacing: float = 1.0
     osb_use_subpixel_rendering: bool = False
     osb_font_hinting: str = "none"
     bbox_expansion_percent: float = 0.1
-    osb_render_expansion_multiplier: float = 1.0
+    osb_render_expansion_narrow_multiplier: float = 1.0
+    osb_render_expansion_tiny_multiplier: float = 1.0
+    osb_render_expansion_aspect_ratio_threshold: float = 0.4
+    osb_render_expansion_area_ratio_threshold: float = 0.005
     text_box_proximity_ratio: float = 0.02  # 2% of image dimension
     flux_guidance_scale: float = 2.5
     flux_prompt: str = "Remove all text."

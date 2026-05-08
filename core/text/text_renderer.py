@@ -32,16 +32,20 @@ def render_text_skia(
     bbox: Tuple[int, int, int, int],
     font_dir: str,
     cleaned_mask: Optional[np.ndarray] = None,
+    extended_collision_mask: Optional[np.ndarray] = None,
     bubble_color_bgr: Optional[Tuple[int, int, int]] = (255, 255, 255),
     config: Optional[RenderingConfig] = None,
     raise_on_safe_error: bool = False,
     verbose: bool = False,
-    bubble_id: Optional[str] = None,
+    bubble_id: Optional[str] = "1",
     rotation_deg: float = 0.0,
     vertical_stack: bool = False,
     text_color_rgb: Optional[Tuple[int, int, int]] = None,
     text_background_color: Optional[Tuple[int, int, int]] = None,
+    stroke_color_rgb: Optional[Tuple[int, int, int]] = None,
+    stroke_width_ratio: float = 0.0,
     layout_only: bool = False,
+    text_bbox: Optional[Tuple[int, int, int, int]] = None,
 ) -> Image.Image:
     """
     Fits and renders text within a bounding box using Skia and HarfBuzz.
@@ -113,8 +117,10 @@ def render_text_skia(
     if config is None:
         config = RenderingConfig()
 
-    layout_box_top_left = None
+    target_center_x = None
+    target_center_y = None
     safe_area_result = None
+    safe_area_mask_for_collision = None
     safe_area_fallback_logged = False
     if cleaned_mask is not None:
         try:
@@ -133,23 +139,63 @@ def render_text_skia(
             safe_area_fallback_logged = True
 
     if safe_area_result is not None:
-        guaranteed_box, _ = safe_area_result
-        box_x, box_y, box_w, box_h = guaranteed_box
-        layout_box_top_left = (box_x, box_y)
-        max_render_width = float(box_w)
-        max_render_height = float(box_h)
-        target_center_x = box_x + box_w / 2.0
-        target_center_y = box_y + box_h / 2.0
-        log_message("Using centroid-based safe area calculation", verbose=verbose)
+        guaranteed_box, centroid, _ = safe_area_result
+
+        if extended_collision_mask is not None:
+            try:
+                extended_safe_area_result = calculate_centroid_expansion_box(
+                    extended_collision_mask, padding_pixels=config.padding_pixels, verbose=verbose
+                )
+                safe_area_mask_for_collision = extended_safe_area_result[2]
+                box_x, box_y, box_w, box_h = extended_safe_area_result[0]
+                target_center_x, target_center_y = box_x + box_w / 2.0, box_y + box_h / 2.0
+                log_message("Using extended collision mask for conjoined bubble safe area", verbose=verbose)
+            except ImageProcessingError:
+                safe_area_mask_for_collision = safe_area_result[2]
+                box_x, box_y, box_w, box_h = guaranteed_box
+                target_center_x, target_center_y = box_x + box_w / 2.0, box_y + box_h / 2.0
+                log_message("Extended safe area calculation failed, falling back to primary safe area", verbose=verbose)
+        else:
+            safe_area_mask_for_collision = safe_area_result[2]
+            box_x, box_y, box_w, box_h = guaranteed_box
+            target_center_x, target_center_y = box_x + box_w / 2.0, box_y + box_h / 2.0
+
+        if text_bbox is not None and len(text_bbox) == 4:
+            tx1, ty1, tx2, ty2 = [float(v) for v in text_bbox]
+            target_center_x = tx1 + (tx2 - tx1) / 2.0
+            target_center_y = ty1 + (ty2 - ty1) / 2.0
+            log_message("Using original text_bbox centroid for visual centering", verbose=verbose)
+
+        # Compute fill ratio to determine if this is a rectangle or an ellipse
+        mask_crop = safe_area_mask_for_collision[box_y:box_y+box_h, box_x:box_x+box_w]
+        if mask_crop.size > 0:
+            fill_ratio = np.count_nonzero(mask_crop) / mask_crop.size
+        else:
+            fill_ratio = 1.0
+
+        # Map fill_ratio: 1.0 (rectangle) -> 0.95, 0.785 (ellipse) -> 0.75
+        width_factor = 0.75 + (fill_ratio - 0.785) * (0.95 - 0.75) / (1.0 - 0.785)
+        width_factor = max(0.65, min(0.95, width_factor))
+
+        # Give wide bubbles a bit more width allowance
+        bubble_aspect = box_w / max(1, box_h)
+        if bubble_aspect > 1.2:
+            width_factor = min(0.98, width_factor * 1.15)
+
+        max_render_width = float(box_w) * width_factor
+        max_render_height = float(box_h) * 0.9
+        log_message(f"Using centroid-based safe area. Fill ratio: {fill_ratio:.2f}, width factor: {width_factor:.2f}", verbose=verbose)
     else:
-        # Fallback to padded bbox
+        # Fallback padding if not using safe area masks
         if not safe_area_fallback_logged:
             log_message(
                 "Safe area calculation failed, falling back to padded bbox method",
                 verbose=verbose,
             )
-        max_render_width = bubble_width * (1 - 2 * FALLBACK_PADDING_RATIO)
-        max_render_height = bubble_height * (1 - 2 * FALLBACK_PADDING_RATIO)
+
+        fallback_ratio = config.padding_pixels / 100.0 if config and hasattr(config, 'padding_pixels') else FALLBACK_PADDING_RATIO
+        max_render_width = bubble_width * (1 - 2 * fallback_ratio)
+        max_render_height = bubble_height * (1 - 2 * fallback_ratio)
 
         if max_render_width <= 0 or max_render_height <= 0:
             max_render_width = max(1.0, float(bubble_width))
@@ -219,9 +265,10 @@ def render_text_skia(
             config.badness_exponent,
             verbose,
             bubble_id,
-            cleaned_mask,
-            layout_box_top_left,
+            safe_area_mask_for_collision if safe_area_mask_for_collision is not None else cleaned_mask,
+            (target_center_x, target_center_y),
             config.detach_trailing_ellipsis,
+            mask_offset=(0.0, 0.0),
         )
     except RenderingError as e:
         raise RenderingError(f"Layout optimization failed: {e}") from e
@@ -282,10 +329,18 @@ def render_text_skia(
     skia_bg_color = None
     if text_background_color is not None:
         skia_bg_color = skia.Color(
-            text_background_color[0],
-            text_background_color[1],
-            text_background_color[2],
+            text_background_color[0], text_background_color[1], text_background_color[2]
         )
+
+    skia_outline_color = None
+    if stroke_color_rgb is not None:
+        skia_outline_color = skia.Color(
+            stroke_color_rgb[0], stroke_color_rgb[1], stroke_color_rgb[2]
+        )
+
+    final_outline_width = config.outline_width
+    if stroke_width_ratio > 0.0:
+        final_outline_width = max(final_outline_width, stroke_width_ratio * layout_data["font_size"])
 
     # Apply supersampling if enabled
     if config.supersampling_factor > 1:
@@ -326,6 +381,10 @@ def render_text_skia(
         # Scale line widths
         for line_data in scaled_layout_data["lines"]:
             line_data["width"] = line_data["width"] * factor
+            if "center_x" in line_data:
+                line_data["center_x"] = (line_data["center_x"] - crop_x1) * factor
+            if "target_width" in line_data:
+                line_data["target_width"] = line_data["target_width"] * factor
 
         # Scale metrics - create a simple object with scaled attributes
         original_metrics = layout_data["metrics"]
@@ -377,7 +436,7 @@ def render_text_skia(
             text_color,
             config.use_subpixel_rendering,
             config.font_hinting,
-            config.outline_width * factor,  # Scale outline width too
+            final_outline_width * factor,  # Scale outline width too
             verbose,
             pre_translate_x=(
                 float(scaled_target_center_x)
@@ -395,6 +454,7 @@ def render_text_skia(
                 else 0.0
             ),
             text_background_color=skia_bg_color,
+            outline_color=skia_outline_color,
         )
 
         if not success:
@@ -443,7 +503,7 @@ def render_text_skia(
             text_color,
             config.use_subpixel_rendering,
             config.font_hinting,
-            config.outline_width,
+            final_outline_width,
             verbose,
             pre_translate_x=(
                 float(target_center_x)
@@ -461,6 +521,7 @@ def render_text_skia(
                 else 0.0
             ),
             text_background_color=skia_bg_color,
+            outline_color=skia_outline_color,
         )
 
         if not success:

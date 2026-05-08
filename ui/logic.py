@@ -225,7 +225,8 @@ def process_batch_logic(
     output_base_dir: Path = Path("./output"),
     gradio_progress: Any = None,
     cancellation_manager: Optional["CancellationManager"] = None,
-    batch_workflow_mode: str = "Standard (Page-by-page)",   
+    batch_workflow_mode: str = "标准模式 (逐页处理)",
+    batch_large_directory_mode: bool = False,
     batch_script_upload: Optional[str] = None,
     batch_json_upload: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -264,8 +265,8 @@ def process_batch_logic(
         Exception: For unexpected errors during processing.
     """
     start_time = time.time()
-    
-    if batch_workflow_mode in ["Advanced (Export Script Only)", "Advanced (Import Translated Script & Render)"]:
+
+    if batch_workflow_mode in ["高级模式 (仅导出未翻译脚本)", "高级模式 (导入已翻译脚本并渲染)"]:
         config.translation.provider = "OpenAI-Compatible"
         config.translation.model_name = "bypass-model"
         config.translation.openai_compatible_url = "http://bypass.local"
@@ -409,15 +410,32 @@ def process_batch_logic(
                     verbose=config.verbose,
                 )
 
-            for img_file in image_files_to_copy:
-                try:
-                    # Preserve metadata when copying
-                    shutil.copy2(img_file, temp_dir_path / img_file.name)
-                except Exception as copy_err:
-                    log_message(
-                        f"Failed to copy {img_file.name}: {copy_err}", always_print=True
-                    )
+            if image_files_to_copy:
+                # Find common path to preserve directory structure
+                flatten_files = True
+                for img_file in image_files_to_copy:
+                    try:
+                        rel_path = Path(img_file.name)
+                        parts = img_file.parts
+                        if "gradio" in parts:
+                            idx = parts.index("gradio")
+                            if idx + 2 < len(parts):
+                                extracted_rel_path = Path(*parts[idx+2:])
+                                if extracted_rel_path.name == img_file.name:
+                                    rel_path = extracted_rel_path
+                                    if len(rel_path.parts) > 1:
+                                        flatten_files = False
+
+                        dest_path = temp_dir_path / rel_path
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(img_file, dest_path)
+                        log_message(f"DEBUG-COPY: Copied {img_file.name} to {dest_path}", always_print=True)
+                    except Exception as copy_err:
+                        log_message(
+                            f"Failed to copy {img_file.name}: {copy_err}", always_print=True
+                        )
             process_dir = temp_dir_path
+            preserve_structure = not flatten_files
 
         elif isinstance(input_dir_or_files, str):
             input_path = validate_batch_input_path(input_dir_or_files)
@@ -433,58 +451,199 @@ def process_batch_logic(
         if not process_dir:
             raise LogicError("Could not determine processing directory.")
 
-        # =========================================================================
-        # 核心分流逻辑：根据 UI 选择的 batch_workflow_mode 决定执行哪套管线
-        # =========================================================================
-        if batch_workflow_mode == "Standard (Page-by-page)":
-            # 兼容原版的逐页翻译模式
-            results = batch_translate_images(
-                input_dir=process_dir,
-                config=config,
-                output_dir=batch_output_path,
-                progress_callback=_batch_progress_callback,
-                preserve_structure=preserve_structure,
-                cancellation_manager=cancellation_manager,
-            )
+        log_message(f"DEBUG: process_dir is {process_dir}", always_print=True)
+        try:
+            for item in process_dir.rglob("*"):
+                log_message(f"DEBUG-FILE in process_dir: {item}", always_print=True)
+        except Exception as e:
+            log_message(f"DEBUG-ERROR: {e}", always_print=True)
+
+
+        # Determine original input name for output folder
+        input_name = "batch_output"
+        if isinstance(input_dir_or_files, str):
+            input_name = Path(input_dir_or_files).stem
+        elif isinstance(input_dir_or_files, dict) and "zip" in input_dir_or_files:
+            input_name = Path(input_dir_or_files["zip"]).stem
+        elif isinstance(input_dir_or_files, list) and input_dir_or_files:
+            try:
+                # Try to extract the top-level directory name from the uploaded files
+                for f in input_dir_or_files:
+                    p = Path(f)
+                    parts = p.parts
+                    if "gradio" in parts:
+                        idx = parts.index("gradio")
+                        if idx + 2 < len(parts):
+                            # parts[idx] is 'gradio', parts[idx+1] is hash, parts[idx+2] is the folder name!
+                            # if it's a file, it will be the filename, but if we have multiple files with the same parent, we can detect it.
+                            parent_name = parts[idx+2]
+                            if parent_name != p.name:
+                                input_name = parent_name
+                                break
+            except Exception:
+                pass
+
+        mode_mapping = {
+            "高级模式 (全图上下文自动关联 API)": "auto_api_full",
+            "高级模式 (仅导出未翻译脚本)": "export_only",
+            "高级模式 (导入已翻译脚本并渲染)": "import_render"
+        }
+        pipeline_mode = mode_mapping.get(batch_workflow_mode, "auto_api_full")
+
+        # Helper to get unique output directory
+        def get_unique_output_dir(base_dir: Path, name: str) -> Path:
+            def _has_images(d: Path) -> bool:
+                try:
+                    return any(f.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"] for f in d.rglob("*") if f.is_file())
+                except Exception:
+                    return False
+
+            out_dir = base_dir / name
+            if not out_dir.exists():
+                return out_dir
+            elif pipeline_mode == "import_render" and not _has_images(out_dir):
+                return out_dir
+
+            counter = 1
+            while True:
+                candidate = base_dir / f"{name}-{counter}"
+                if not candidate.exists():
+                    return candidate
+                elif pipeline_mode == "import_render" and not _has_images(candidate):
+                    return candidate
+                counter += 1
+
+        # Determine tasks based on Large Directory Mode
+        tasks = []
+
+        # If process_dir has exactly one folder (e.g. the top-level 'mahou' uploaded via Gradio) and no files, step into it
+        # so Large Directory Mode correctly identifies the actual subfolders inside 'mahou'
+        tmp_files = [f for f in process_dir.iterdir() if f.is_file()]
+        tmp_dirs = [d for d in process_dir.iterdir() if d.is_dir()]
+        if len(tmp_files) == 0 and len(tmp_dirs) == 1:
+            process_dir = tmp_dirs[0]
+            if len(process_dir.name) < 20: # ignore hash directories
+                input_name = process_dir.name
+
+        if batch_large_directory_mode:
+            # Look for subdirectories in process_dir
+            subdirs = [d for d in process_dir.iterdir() if d.is_dir()]
+            if not subdirs:
+                # Fallback if no subdirectories found
+                tasks.append({
+                    "input_dir": process_dir,
+                    "output_dir": get_unique_output_dir(output_base_dir, process_dir.name),
+                    "preserve_structure": preserve_structure
+                })
+            else:
+                for subdir in subdirs:
+                    tasks.append({
+                        "input_dir": subdir,
+                        "output_dir": get_unique_output_dir(output_base_dir, subdir.name),
+                        "preserve_structure": False # Already isolated to a subdirectory
+                    })
         else:
-            # 激活高级两遍处理管线 (Two-Pass Architecture)
-            from core.pipeline import run_advanced_batch_pipeline
-            
-            mode_mapping = {
-                "Advanced (Auto API - Whole Chapter)": "auto_api_full",
-                "Advanced (Export Script Only)": "export_only",
-                "Advanced (Import Translated Script & Render)": "import_render"
-            }
-            pipeline_mode = mode_mapping.get(batch_workflow_mode, "auto_api_full")
-            
-            # 如果是外部导入翻译文本模式，复制用户上传的文件到输出目录
-            if pipeline_mode == "import_render":
-                if not batch_script_upload:
-                    raise ValidationError("Please upload the translated script file (TXT).")
-                if not batch_json_upload:
-                    raise ValidationError("Please upload the manga_script.json coordinates file.")
-                
-                # 提前创建输出目录并复制两个文件
-                batch_output_path.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(batch_script_upload, batch_output_path / "manga_script_translated.txt")
-                shutil.copy2(batch_json_upload, batch_output_path / "manga_script.json")
-                
-            _batch_progress_callback(0.5, desc=f"Running {pipeline_mode} pipeline...")
-            
-            run_advanced_batch_pipeline(
-                input_dir=process_dir,
-                config=config,
-                output_dir=batch_output_path,
-                mode=pipeline_mode
-            )
-            
-            # 伪造一个 results 字典让前端 UI 画廊显示和统计不报错
-            file_count = len(list(process_dir.glob("*.*"))) if pipeline_mode != "export_only" else 0
-            results = {
-                "success_count": file_count,
-                "error_count": 0,
-                "errors": {}
-            }
+            tasks.append({
+                "input_dir": process_dir,
+                "output_dir": get_unique_output_dir(output_base_dir, input_name),
+                "preserve_structure": preserve_structure
+            })
+
+        total_files = 0
+        final_output_path = tasks[0]["output_dir"] if tasks else output_base_dir / timestamp
+
+        for task_idx, task in enumerate(tasks):
+            t_input_dir = task["input_dir"]
+            t_output_dir = task["output_dir"]
+            t_preserve = task["preserve_structure"]
+
+            # DEBUG
+            log_message(f"DEBUG: t_input_dir is {t_input_dir}", always_print=True)
+            try:
+                for item in t_input_dir.rglob("*"):
+                    log_message(f"DEBUG-FILE: {item}", always_print=True)
+            except Exception as e:
+                log_message(f"DEBUG-ERROR: {e}", always_print=True)
+            # END DEBUG
+
+            _batch_progress_callback(task_idx / max(1, len(tasks)), desc=f"Processing {t_input_dir.name}...")
+
+            # =========================================================================
+            # 核心分流逻辑：根据 UI 选择的 batch_workflow_mode 决定执行哪套管线
+            # =========================================================================
+            if batch_workflow_mode == "标准模式 (逐页处理)":
+                # 兼容原版的逐页翻译模式
+                _ = batch_translate_images(
+                    input_dir=t_input_dir,
+                    config=config,
+                    output_dir=t_output_dir,
+                    progress_callback=_batch_progress_callback,
+                    preserve_structure=t_preserve,
+                    cancellation_manager=cancellation_manager,
+                )
+            else:
+                # 激活高级两遍处理管线 (Two-Pass Architecture)
+                from core.pipeline import run_advanced_batch_pipeline
+
+                # 如果是外部导入翻译文本模式
+                if pipeline_mode == "import_render":
+                    t_output_dir.mkdir(parents=True, exist_ok=True)
+                    if batch_large_directory_mode:
+                        # Auto-locate the scripts in the corresponding output directory or input directory
+                        # 1. Check in previously created output directory without the '-X' suffix if we had to create a new one
+                        original_out_dir = output_base_dir / t_input_dir.name
+                        script_txt = original_out_dir / "manga_script_translated.txt"
+                        script_json = original_out_dir / "manga_script.json"
+
+                        # 2. Check in the current actual output directory just in case
+                        if not script_txt.exists():
+                            script_txt = t_output_dir / "manga_script_translated.txt"
+                        if not script_json.exists():
+                            script_json = t_output_dir / "manga_script.json"
+
+                        # 3. Check in input directory
+                        if not script_txt.exists():
+                            script_txt = t_input_dir / "manga_script_translated.txt"
+                        if not script_json.exists():
+                            script_json = t_input_dir / "manga_script.json"
+
+                        if not script_txt.exists() or not script_json.exists():
+                            # Skip this subdir if scripts are not found
+                            log_message(f"Skipping {t_input_dir.name}: missing manga_script_translated.txt or manga_script.json", always_print=True)
+                            continue
+
+                        # If found in input dir, copy to output dir for processing
+                        if script_txt.parent != t_output_dir:
+                            shutil.copy2(script_txt, t_output_dir / "manga_script_translated.txt")
+                        if script_json.parent != t_output_dir:
+                            shutil.copy2(script_json, t_output_dir / "manga_script.json")
+                    else:
+                        if not batch_script_upload:
+                            raise ValidationError("Please upload the translated script file (TXT).")
+                        if not batch_json_upload:
+                            raise ValidationError("Please upload the manga_script.json coordinates file.")
+
+                        shutil.copy2(batch_script_upload, t_output_dir / "manga_script_translated.txt")
+                        shutil.copy2(batch_json_upload, t_output_dir / "manga_script.json")
+
+                run_advanced_batch_pipeline(
+                    input_dir=t_input_dir,
+                    config=config,
+                    output_dir=t_output_dir,
+                    mode=pipeline_mode,
+                    cancellation_manager=cancellation_manager
+                )
+
+            file_count = len(list(t_input_dir.glob("*.*"))) if pipeline_mode != "export_only" else 0
+            total_files += file_count
+
+        # 伪造一个 results 字典让前端 UI 画廊显示和统计不报错
+        results = {
+            "success_count": total_files,
+            "error_count": 0,
+            "errors": {},
+            "output_path": final_output_path
+        }
 
         processing_time = time.time() - start_time
         results["processing_time"] = processing_time

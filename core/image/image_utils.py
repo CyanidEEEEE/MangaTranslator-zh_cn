@@ -172,41 +172,16 @@ def save_image_with_compression(
 
 def calculate_centroid_expansion_box(
     cleaned_mask: np.ndarray, padding_pixels: float = 5.0, verbose: bool = False
-) -> Tuple[Tuple[int, int, int, int], Tuple[float, float]]:
+) -> Tuple[Tuple[int, int, int, int], Tuple[float, float], np.ndarray]:
     """
     Calculates a guaranteed safe rendering box within a speech bubble to ensure text
     never touches the boundaries. It uses distance transforms to establish a safe zone
     and ray-casts from the center of mass to determine the maximum symmetrical bounds.
-
-    Args:
-        cleaned_mask: Binary mask (0/255) of the cleaned speech bubble where 255 represents
-                     the bubble interior and 0 represents the background
-        padding_pixels: Minimum distance in pixels that text must maintain from bubble edges.
-                       Higher values create more padding but smaller text areas.
-        verbose: Whether to print detailed processing information for debugging
-
-    Returns:
-        Tuple containing:
-        - Tuple[int, int, int, int]: Safe box coordinates as [x, y, width, height] where
-          (x, y) is the top-left corner.
-        - Tuple[float, float]: True geometric center (centroid) of the safe area as (cx, cy).
-
-    Raises:
-        ImageProcessingError: If mask is invalid or calculation fails
-
-    Example:
-        >>> mask = np.zeros((100, 100), dtype=np.uint8)
-        >>> cv2.ellipse(mask, (50, 50), (40, 30), 0, 0, 360, 255, -1)
-        >>> box, centroid = calculate_centroid_expansion_box(mask, padding_pixels=10.0)
-        >>> log_message(f"Safe box: {box}, Centroid: {centroid}", verbose=True)
-        Safe box: (20, 30, 60, 40), Centroid: (50.0, 50.0)
     """
     if cleaned_mask is None or not np.any(cleaned_mask):
         raise ImageProcessingError("Invalid or empty mask provided")
 
     try:
-        # Treat image edges as hard boundaries. Without this, bubbles touching the border
-        # get inflated distance values, pushing the anchor to the edge and collapsing the safe area.
         padded_mask = np.zeros(
             (cleaned_mask.shape[0] + 2, cleaned_mask.shape[1] + 2), dtype=np.uint8
         )
@@ -233,7 +208,6 @@ def calculate_centroid_expansion_box(
         centroid_x = moments["m10"] / moments["m00"]
         centroid_y = moments["m01"] / moments["m00"]
 
-        # Check if centroid is in a constricted region (dual/conjoined bubbles)
         _, max_val, _, max_loc = cv2.minMaxLoc(distance_map)
 
         cx_int, cy_int = int(round(centroid_x)), int(round(centroid_y))
@@ -254,11 +228,8 @@ def calculate_centroid_expansion_box(
 
         centroid = (centroid_x, centroid_y)
 
-        # Ray-cast from centroid to find maximum safe dimensions
         cx, cy = int(round(centroid_x)), int(round(centroid_y))
-        mask_h, mask_w = safe_area_mask.shape
 
-        # Verify centroid is within safe area, adjust if needed
         if (
             cy < 0
             or cy >= mask_h
@@ -290,8 +261,6 @@ def calculate_centroid_expansion_box(
         down_zeros = np.where(safe_area_mask[cy:, cx] == 0)[0]
         dist_to_bottom_edge = down_zeros.min() if down_zeros.size > 0 else mask_h - cy
 
-        # Only subtract 1 if distance > 1, otherwise use the distance directly
-        # This prevents collapsing 1-pixel safe areas to 0x0
         min_width_dist = min(dist_to_left_edge, dist_to_right_edge)
         min_height_dist = min(dist_to_top_edge, dist_to_bottom_edge)
         safe_width_base = min_width_dist - 1 if min_width_dist > 1 else min_width_dist
@@ -327,7 +296,7 @@ def calculate_centroid_expansion_box(
                 f"Safe area: {max_safe_width:.0f}x{max_safe_height:.0f} at ({centroid_x:.0f}, {centroid_y:.0f})",
                 verbose=verbose,
             )
-            return guaranteed_box, centroid
+            return guaranteed_box, centroid, safe_area_mask
         else:
             log_message(
                 f"Safe area validation failed: exceeds bounds {mask_w}x{mask_h}",

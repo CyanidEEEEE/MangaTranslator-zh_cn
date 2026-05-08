@@ -137,6 +137,7 @@ def draw_layout(
     pre_translate_y: float = 0.0,
     pre_rotate_deg: float = 0.0,
     text_background_color: Optional[int] = None,
+    outline_color: Optional[int] = None,
 ) -> bool:
     """
     Draws the text layout onto a Skia surface.
@@ -187,15 +188,18 @@ def draw_layout(
 
         outline_paint = None
         if outline_width > 0:
-            r = skia.ColorGetR(text_color)
-            g = skia.ColorGetG(text_color)
-            b = skia.ColorGetB(text_color)
-            lum = 0.299 * r + 0.587 * g + 0.114 * b
-            outline_color = skia.ColorBLACK if lum >= 80 else skia.ColorWHITE
+            if outline_color is None:
+                r = skia.ColorGetR(text_color)
+                g = skia.ColorGetG(text_color)
+                b = skia.ColorGetB(text_color)
+                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                outline_color_to_use = skia.ColorBLACK if lum >= 80 else skia.ColorWHITE
+            else:
+                outline_color_to_use = outline_color
 
             outline_paint = skia.Paint(
                 AntiAlias=True,
-                Color=outline_color,
+                Color=outline_color_to_use,
                 Style=skia.Paint.kStroke_Style,
                 StrokeWidth=outline_width,
                 StrokeJoin=skia.Paint.kRound_Join,
@@ -244,24 +248,48 @@ def draw_layout(
             for i, line_data in enumerate(final_lines_data):
                 line_width_measured = line_data["width"]
 
-                line_start_x = (
-                    block_start_x + (final_max_line_width - line_width_measured) / 2.0
-                )
+                line_cx = line_data.get("center_x", target_center_x)
+
+                target_width = line_data.get("target_width", line_width_measured)
+                slack = target_width - line_width_measured
+                extra_spacing_per_gap = 0.0
+
+                is_last_line = (i == len(final_lines_data) - 1)
+                should_justify = False
+
+                if slack <= 0:
+                    should_justify = False
+                elif is_last_line and slack > target_width * 0.3:
+                    should_justify = False
+
+                segments = line_data.get("segments", [])
+
+                if should_justify:
+                    total_chars = sum(len(segment_text) for segment_text, _ in segments)
+                    total_gaps = max(0, total_chars - 1)
+                    if total_gaps > 0:
+                        extra_spacing_per_gap = slack / total_gaps
+
+                if should_justify:
+                    line_start_x = line_cx - target_width / 2.0
+                else:
+                    line_start_x = line_cx - line_width_measured / 2.0
+
                 cursor_x = line_start_x
 
                 if bg_paint is not None:
                     pad_x = final_font_size * 0.1
                     pad_y = final_font_size * 0.05
+                    box_width = target_width if should_justify else line_width_measured
                     rect = skia.Rect.MakeXYWH(
                         line_start_x - pad_x,
                         current_baseline_y + final_metrics.fAscent - pad_y,
-                        line_width_measured + 2 * pad_x,
+                        box_width + 2 * pad_x,
                         -final_metrics.fAscent + final_metrics.fDescent + 2 * pad_y,
                     )
                     canvas.drawRect(rect, bg_paint)
 
-                segments = line_data.get("segments", [])
-                log_message(f"Line {i}: {len(segments)} segments", verbose=verbose)
+                log_message(f"Line {i}: {len(segments)} segments, slack={slack:.1f}, justify={should_justify}", verbose=verbose)
 
                 is_line_rtl = is_rtl_script(line_data.get("text_with_markers", ""))
                 if is_line_rtl:
@@ -359,7 +387,10 @@ def draw_layout(
                     )
 
                     if is_line_rtl:
-                        cursor_x -= segment_width_calculated
+                        # For RTL, we would need to reverse the slack distribution logically,
+                        # but we can just use the calculated width plus total extra spacing
+                        segment_total_extra = len(positions) * extra_spacing_per_gap
+                        cursor_x -= (segment_width_calculated + segment_total_extra)
                         segment_start_x = cursor_x
                     else:
                         segment_start_x = cursor_x
@@ -375,7 +406,7 @@ def draw_layout(
                         )
                         skia_point_positions.append(skia.Point(glyph_x, glyph_y))
 
-                        segment_cursor_x += pos.x_advance / HB_26_6_SCALE_FACTOR
+                        segment_cursor_x += (pos.x_advance / HB_26_6_SCALE_FACTOR) + extra_spacing_per_gap
 
                     try:
                         _ = builder.allocRunPos(
@@ -390,7 +421,7 @@ def draw_layout(
                             canvas.drawTextBlob(text_blob, 0, 0, paint)
 
                             if not is_line_rtl:
-                                cursor_x += segment_width_calculated
+                                cursor_x += segment_width_calculated + len(positions) * extra_spacing_per_gap
 
                             log_message(
                                 f"Rendered '{segment_text}' ({style_name}) width={segment_width_calculated:.0f}",
@@ -408,7 +439,7 @@ def draw_layout(
                             always_print=True,
                         )
                         if not is_line_rtl:
-                            cursor_x += segment_width_calculated
+                            cursor_x += segment_width_calculated + len(positions) * extra_spacing_per_gap
 
                 current_baseline_y += final_line_height
 
