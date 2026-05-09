@@ -1,3 +1,6 @@
+MangaTranslator中文优化版本，推荐使用整合包：
+
+以下为原项目说明：
 ## MangaTranslator
 
 Gradio-based web application for automating the translation of manga/comic page images using AI. Targets speech bubbles and text outside of speech bubbles. Supports 59 languages and custom font pack usage.
