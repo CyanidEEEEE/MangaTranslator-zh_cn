@@ -3,6 +3,9 @@ MangaTranslator中文优化版本，推荐使用整合包：
 链接：https://pan.quark.cn/s/196cabd87c10
 提取码：6gaY
 
+推荐使用自动项目+Gemini或Gpt处理封面图；
+部分图片气泡错误可以在yolo_1和yolo_2之间切换解决，想要手动修图建议使用Koharu项目
+
 以下为原项目说明：
 ## MangaTranslator
 
