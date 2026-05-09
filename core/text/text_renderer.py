@@ -23,7 +23,7 @@ from utils.exceptions import FontError, ImageProcessingError, RenderingError
 from utils.logging import log_message
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining text color
-FALLBACK_PADDING_RATIO = 0.08  # 8% padding ratio when safe area calculation fails
+FALLBACK_PADDING_RATIO = 0.15  # 8% padding ratio when safe area calculation fails
 
 
 def render_text_skia(
@@ -186,20 +186,24 @@ def render_text_skia(
         max_render_height = float(box_h) * 0.9
         log_message(f"Using centroid-based safe area. Fill ratio: {fill_ratio:.2f}, width factor: {width_factor:.2f}", verbose=verbose)
     else:
-        # Fallback padding if not using safe area masks
+        # 修复方案：让回退逻辑也使用用户设置的绝对像素值
         if not safe_area_fallback_logged:
             log_message(
-                "Safe area calculation failed, falling back to padded bbox method",
+                f"Safe area calculation failed, falling back to padded bbox (padding: {config.padding_pixels}px)",
                 verbose=verbose,
             )
-
-        fallback_ratio = config.padding_pixels / 100.0 if config and hasattr(config, 'padding_pixels') else FALLBACK_PADDING_RATIO
-        max_render_width = bubble_width * (1 - 2 * fallback_ratio)
-        max_render_height = bubble_height * (1 - 2 * fallback_ratio)
+            
+        # 增加保护：Padding 不能超过气泡宽度的 40%，防止减成负数
+        effective_padding_w = min(config.padding_pixels, bubble_width * 0.4)
+        effective_padding_h = min(config.padding_pixels, bubble_height * 0.4)
+        
+        max_render_width = bubble_width - (2 * effective_padding_w)
+        max_render_height = bubble_height - (2 * effective_padding_h)
 
         if max_render_width <= 0 or max_render_height <= 0:
-            max_render_width = max(1.0, float(bubble_width))
-            max_render_height = max(1.0, float(bubble_height))
+            # 最后的保底逻辑
+            max_render_width = max(1.0, float(bubble_width) * 0.9)
+            max_render_height = max(1.0, float(bubble_height) * 0.9)
 
         target_center_x = x1 + bubble_width / 2.0
         target_center_y = y1 + bubble_height / 2.0
