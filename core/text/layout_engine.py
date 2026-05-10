@@ -473,7 +473,10 @@ def check_fit(
                 line_text_with_markers, font_size, loaded_hb_faces, features_to_enable
             )
 
-            center_x = target_center[0] if target_center else 0.0
+            if collision_mask is not None and target_center is not None and 'best_contour_centers' in locals() and best_contour_centers is not None:
+                center_x = best_contour_centers[i]
+            else:
+                center_x = target_center[0] if target_center else 0.0
 
             lines_data_at_size.append(
                 {"text_with_markers": line_text_with_markers, "width": width, "center_x": float(center_x)}
@@ -703,6 +706,22 @@ def find_optimal_layout(
                     mask_offset,
                 )
 
+            if not has_collision:
+                # REJECT layouts that degenerate into vertical columns if it's supposed to be horizontal text
+                # i.e., if max_line_width is very small compared to line_height, it means 1 char per line.
+                # Only apply this penalty if there are multiple characters and multiple lines.
+                is_degenerate_vertical = False
+                if len(fit_data["lines"]) > 1 and len(clean_text) > 1:
+                    if len(clean_text) <= 3:
+                        # For 2 or 3 characters, any wrapping makes it look vertical. Force 1 line.
+                        is_degenerate_vertical = True
+                    elif fit_data["max_line_width"] < fit_data["line_height"] * 2.0:
+                        # For longer text, require at least ~2 characters per line to look horizontal
+                        is_degenerate_vertical = True
+                
+                if is_degenerate_vertical:
+                    has_collision = True # Treat as collision to force smaller font
+                    
             if not has_collision:
                 best_fit_size = mid
                 best_fit_lines_data = fit_data["lines"]

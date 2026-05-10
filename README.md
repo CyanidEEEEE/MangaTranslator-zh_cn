@@ -1,284 +1,64 @@
-MangaTranslator中文优化版本，推荐使用整合包：
-
-以下为原项目说明：
-## MangaTranslator
-
-Gradio-based web application for automating the translation of manga/comic page images using AI. Targets speech bubbles and text outside of speech bubbles. Supports 59 languages and custom font pack usage.
-
-<div align="left">
-  <table>
-    <tr>
-      <th style="text-align: left">Original</th>
-      <th style="text-align: left">Translated (w/ a single click)</th>
-    </tr>
-    <tr>
-      <td><img src="docs/images/example_original.jpg" width="400" /></td>
-      <td><img src="docs/images/example_translation.jpg" width="400" /></td>
-    </tr>
-  </table>
-</div>
-
-## Table of Contents
-
-- [Features](#features)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Post-Install Setup](#post-install-setup)
-- [Run](#run)
-- [Documentation](#documentation)
-- [Updating](#updating)
-- [License & Credits](#license--credits)
-
-## Features
-
-- **Detection**: Speech bubble detection & segmentation (YOLO + SAM 2.1/3)
-- **Cleaning**: Inpaint speech bubbles and OSB text (Flux.2 Klein, Flux.1 Kontext, or OpenCV)
-- **Translation**: LLM-powered OCR & translation (59 languages)
-- **Rendering**: Text rendering with alignment and custom font packs
-- **Upscaling**: 2x-AnimeSharpV4 for enhanced output quality
-- **Processing**: Single/batch processing with directory preservation and ZIP support
-- **Interfaces**: Web UI (Gradio) and CLI
-- **Automation**: One-click translation; no intervention required
+# 漫画翻译器 (MangaTranslator) - 使用指南
 
-## Requirements
+欢迎使用 MangaTranslator！这是一款专为汉化组和个人爱好者设计的自动化漫画翻译与排版工具。本项目不仅支持单页的快速试译，更针对长篇漫画的批量处理进行了深度优化。
 
-- Python 3.10+
-- PyTorch (CPU, CUDA, ROCm, XPU, MPS)
-- Font pack with `.ttf`/`.otf` files; included with portable package
-- LLM for Japanese source text; VLM for other languages (API or local)
+---
 
-## Install
+## 🌟 核心推荐工作流：高级模式 (导出与导回)
 
-### Portable Package (Recommended)
+对于整话、整本漫画的翻译，我们**强烈推荐**您使用批量处理界面下的 **“高级模式 (Advanced Mode)”** 进行两步走操作。
 
-Download the standalone zip from the releases page: [Portable Build](https://github.com/meangrinch/MangaTranslator/releases/tag/portable)
-
-**Requirements:**
-
-- **Windows:** Bundled Python/Git included; no additional requirements
-- **Linux/macOS:** Python 3.10+ and Git must be installed on your system
-
-**Setup:**
-
-1. Extract the zip file
-2. Run the setup script for your platform:
-   - **Windows:** Double-click `setup.bat`
-   - **Linux/macOS:** Run `./setup.sh` in terminal
-3. PyTorch version is automatically detected and installed based on your system
-4. Open the launcher script created in `./MangaTranslator/`:
-   - **Windows:** `start-webui.bat`
-   - **Linux/macOS:** `start-webui.sh`
-
-Included font packs:
+这种工作流将“文字提取”与“图像渲染”彻底分离，不仅大大降低了显存压力、极大地提高了处理速度，更能让你完美掌控最终的翻译质量！
 
-- _Komika_ (normal text)
-- _Cookies_ (OSB text)
-- _Comicka_ (either)
-- _Roboto_ (supports accents)
-- _Noto Sans SC_ (supports Simplified Chinese)
+### 为什么推荐高级模式？
+ **上下文关联：** 传统的逐页翻译会导致人物语气跳脱。先提取出全本文本，再丢给大语言模型（LLM）进行整体润色，翻译质量会有质的飞跃。
 
-> [!TIP]
-> In the event that you need to transfer to a fresh portable package:
->
-> - You can safely move the `fonts`, `models`, and `output` directories to the new portable package
-> - You might be able to move the `runtime` directory over, assuming the same setup configuration is wanted
+---
 
-### Manual install
-
-1. Clone and enter the repo
-
-```bash
-git clone https://github.com/meangrinch/MangaTranslator.git
-cd MangaTranslator
-```
+### 📝 高级模式两步走操作指南
 
-2. Create and activate a virtual environment (recommended)
+#### 步骤一：提取并导出脚本 (Export Script)
+1. 进入 Web 界面，切换到 **[批量处理]** 标签页。
+2. 上传你想要翻译的**图片文件夹**或**ZIP 压缩包**。（推荐勾选下方的大目录模式，输入绝对路径例如D:\MangaTranslator\manga\O，程序会批量处理该目录下的文件夹）
+3. 在左侧的【翻译设定】面板中，找到 **批量工作流模式**。
+4. 将模式切换为：👉 **`高级模式 (仅导出未翻译脚本)`**。
+5. 点击 **[开始批量翻译]**。
+6. **等待完成：** 程序会光速扫描所有图片，识别并提取所有气泡和画外音文字。完成后，在您的 `output` 文件夹中会生成以下文件：
+   - `manga_script.json`：(程序用的底层坐标数据，**不要修改它**)
+   - `manga_script_original.txt`：提取出的原始日文/英文剧本。
+   - **`manga_script_translated.txt`**：待翻译的剧本文件模板。
 
-```bash
-python -m venv venv
-# Windows PowerShell/CMD
-.\venv\Scripts\activate
-# Linux/macOS
-source venv/bin/activate
-```
+#### 步骤二：润色你的剧本 (Human Editing)
+打开刚刚生成的 `manga_script_translated.txt`：
+* 你可以直接把它丢给 ChatGPT、Claude 等大语言模型，让它们结合上下文帮你整本翻译。
+* 拿到翻译结果后，直接覆盖保存到 `manga_script_translated.txt` 文件中。
+* 你也可以在这个文件里自由地手动修改任何一句台词，比如把“Level 2”修改为你想要的排版。
 
-3. Install PyTorch (see: [PyTorch Install](https://pytorch.org/get-started/locally/))
+#### 步骤三：导入并渲染图片 (Import & Render)
+1. 拿着你修改好的 `manga_script_translated.txt`，回到网页的 **[批量处理]** 界面。
+2. 将 **批量工作流模式** 切换为：👉 **`高级模式 (导入已翻译脚本并渲染)`**。
+3. 此时界面会出现两个新的上传框：
+   - 在【上传翻译后脚本 (TXT)】：选择你的 `manga_script_translated.txt`。
+   - 在【上传坐标信息 (JSON)】：选择对应的 `manga_script.json`。
+4. 在左侧调整好你想要的**字体**、**字号**、是否开启**纯黑字体**等排版选项。
+5. 点击 **[开始批量翻译]**。
+6. **等待收图：** 程序会开始启动超分模型和涂白模型，将你写好的台词完美地嵌回漫画中！
 
-```bash
-# Example (CUDA 13.0)
-pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 --extra-index-url https://download.pytorch.org/whl/cu130
-# Example (ROCm 7.1)
-pip install torch==2.10.0+rocm7.1 torchvision==0.25.0+rocm7.1 --extra-index-url https://download.pytorch.org/whl/rocm7.1
-# Example (XPU)
-pip install torch==2.10.0+xpu torchvision==0.25.0+xpu --extra-index-url https://download.pytorch.org/whl/xpu
-# Example (MPS/CPU)
-pip install torch==2.10.0 torchvision==0.25.0
-```
+---
 
-4. Install Nunchaku (optional, for Flux.1 Kontext Nunchaku backend)
+## 🎨 专业排版与设置亮点
 
-- Nunchaku wheels are not on PyPI. Install directly from the v1.2.1 GitHub release URL, matching your OS and Python version. CUDA only, and requires a 2000-series card or newer.
+- **强制纯黑字体 (Pure Black Text)：** 在【核心设置】->【渲染(Rendering)】中开启此选项，可无视气泡背景色，强制使用纯黑色的无描边文字，适合黑白漫画的高级嵌字要求。
+- **画外音涂白 (Flux Inpainting)：** 在【核心设置】->【拟声词】中可以启用 Flux 大模型对气泡外的背景文字进行无痕涂白。
 
-```bash
-# Example (Windows, Python 3.13, PyTorch 2.10.0, CUDA 13.0)
-pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp313-cp313-win_amd64.whl
-```
+---
 
-> [!NOTE]
-> Nunchaku is not necessary for the use of Flux models via the SDNQ backend.
+## 🔧 便携版 (Portable) 分发指南
 
-5. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-## Post-Install Setup
-
-### Models
-
-- The application will automatically download and use all required models
-
-### Fonts
-
-- Put font packs as subfolders in `fonts/` with `.otf`/`.ttf` files
-- Prefer filenames that include `italic`/`bold` or both so variants are detected
-- Example structure:
-
-```text
-fonts/
-├─ CC Wild Words/
-│  ├─ CCWildWords-Regular.otf
-│  ├─ CCWildWords-Italic.otf
-│  ├─ CCWildWords-Bold.otf
-│  └─ CCWildWords-BoldItalic.otf
-└─ Komika/
-   ├─ KOMIKA-HAND.ttf
-   └─ KOMIKA-HANDBOLD.ttf
-```
-
-### LLM setup
-
-- Providers: Google, OpenAI, Anthropic, xAI, DeepSeek, Z.ai, Moonshot AI, OpenRouter, OpenAI-Compatible
-- Web UI: configure provider/model/key in the Config tab (stored locally)
-- CLI: pass keys/URLs as flags or via env vars
-- Env vars: `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `MOONSHOT_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`
-- OpenAI-compatible default URL: `http://localhost:1234/v1`
-
-> [!NOTE]
-> YanoljaNEXT-Rosetta models (e.g., `yanolja/YanoljaNEXT-Rosetta-4B-2511-GGUF`) are automatically detected when used via the OpenAI-Compatible provider and receive optimized prompting. These are text-only models and require two-step + local OCR model. The Special Instructions field is mapped to Rosetta's translation glossary (one entry per line, e.g., `Yanolja NEXT -> 야놀자넥스트`).
-
-### OSB text setup (optional)
-
-If you want to use the OSB text pipeline, you need a Hugging Face token with access to the following repositories:
-
-- `deepghs/AnimeText_yolo`
-
-#### Steps to create a token:
-
-1. Sign in or create a Hugging Face account
-2. Visit and accept the terms on:
-   - [AnimeText_yolo](https://huggingface.co/deepghs/AnimeText_yolo)
-   - [FLUX.1 Kontext (dev)](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev) (optional, if using Kontext with Nunchaku)
-   - [SAM 3](https://huggingface.co/facebook/sam3) (optional, if using SAM 3)
-3. Create a new access token in your Hugging Face settings with read access to gated repos ("Read access to contents of public gated repos")
-4. Add the token to the app:
-   - Web UI: set `hf_token` in Config
-   - Env var (alternative): set `HUGGINGFACE_TOKEN`
-5. Save config to preserve the token across sessions
-
-## Run
-
-### Web UI (Gradio)
-
-- **Portable package:**
-  - Windows: Double-click `start-webui.bat` inside the `MangaTranslator` folder
-  - Linux/macOS: Run `./start-webui.sh` inside the `MangaTranslator` folder
-- **Manual install:**
-  - Windows: Run `python app.py --open-browser`
-
-Options: `--models` (default `./models`), `--fonts` (default `./fonts`), `--port` (default `7676`), `--cpu`.
-First launch can take ~1–2 minutes.
-
-Once launched, configure your LLM provider in the Config tab, then upload images and click Translate.
-
-### CLI
-
-Examples:
-
-```bash
-# Single image, Japanese → English, Google provider
-python main.py --input <image_path> \
-  --font-dir "fonts/Komika" --provider Google --google-api-key <AI...>
-
-# Batch folder, custom source/target languages, OpenAI-Compatible provider (LM Studio)
-python main.py --input <folder_path> --batch \
-  --font-dir "fonts/Komika" \
-  --input-language <src_lang> --output-language <tgt_lang> \
-  --provider OpenAI-Compatible --openai-compatible-url http://localhost:1234/v1 \
-  --output ./output
-
-# Single Image, Japanese → English (Google), OSB text pipeline, custom OSB text font
-python main.py --input <image_path> \
-  --font-dir "fonts/Komika" --provider Google --google-api-key <AI...> \
-  --osb-enable --osb-font-dir "fonts/Clementine"
-
-# Cleaning-only mode (no translation/text rendering)
-python main.py --input <image_path> --cleaning-only
-
-# Upscaling-only mode (no detection/translation, only upscale)
-python main.py --input <image_path> --upscaling-only --image-upscale-mode final --image-upscale-factor 2.0
-
-# Test mode (no translation; render placeholder text)
-python main.py --input <image_path> --test-mode
-
-# Full options
-python main.py --help
-```
-
-## Documentation
-
-- [Hardware Requirements](docs/HARDWARE_REQUIREMENTS.md)
-- [Recommended Fonts](docs/FONTS.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-
-## Updating
-
-### Portable Package
-
-- Windows: Run `update.bat` from the portable package root
-- Linux/macOS: Run `./update.sh` from the portable package root
-
-### Manual Install
-
-From the repo root:
-
-```bash
-git pull
-pip install -r requirements.txt  # Or activate venv first if present
-```
-
-## License & credits
-
-- License: Apache-2.0 (see [LICENSE](LICENSE))
-- Author: [grinnch](https://github.com/meangrinch)
-<details>
-<summary><b>ML Models & Libraries</b></summary>
-
-- YOLOv8m Speech Bubble Detector: [kitsumed](https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble)
-- Manga109 Speech Bubble Detector: [huyvux3005](https://huggingface.co/huyvux3005/manga109-segmentation-bubble)
-- Comic Speech Bubble Detector YOLOv8m: [ogkalu](https://huggingface.co/ogkalu/comic-speech-bubble-detector-yolov8m)
-- Manga109 YOLO: [deepghs](https://huggingface.co/deepghs/manga109_yolo)
-- AnimeText YOLO: [deepghs](https://huggingface.co/deepghs/AnimeText_yolo)
-- SAM 2.1: Segment Anything in Images and Videos: [Meta AI](https://huggingface.co/facebook/sam2.1-hiera-large)
-- SAM 3: [Meta AI](https://huggingface.co/facebook/sam3)
-- FLUX.1 Kontext: [Black Forest Labs](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev)
-- FLUX.2 Klein 4B: [Black Forest Labs](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
-- FLUX.2 Klein 9B: [Black Forest Labs](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B)
-- Nunchaku: [Nunchaku AI](https://github.com/nunchaku-ai/nunchaku)
-- SDNQ Quants: [Disty0](https://huggingface.co/Disty0)
-- 2x-AnimeSharpV4: [Kim2091](https://huggingface.co/Kim2091/2x-AnimeSharpV4)
-- Manga OCR: [kha-white](https://github.com/kha-white/manga-ocr)
-- PaddleOCR-VL-1.5: [PaddlePaddle](https://github.com/PaddlePaddle/PaddleOCR-VL-1.5)
-
-</details>
+如果您收到的是打包好的免安装便携版，请注意以下事项：
+1. **无需安装任何环境**，解压后请直接双击文件夹内的 `一键启动.bat` 运行。
+2. **防污染设计**：便携版内部已设置了 `PYTHONNOUSERSITE=1` 环境隔离指令，它**绝对不会**受到您电脑上原有 Python 或 Anaconda 环境变量的干扰，请放心使用。
+3. **配置备份与迁移：** 
+   - 前往 UI 界面的 **[核心设置]** 标签页。
+   - 点击 **[导出设置]** 按钮，系统会自动清洗掉您填写的各种 API Key（保护隐私），为您生成一份纯净的 `config.json` 文件。
+   - 您可以将这份配置文件发给其他朋友，他们只需点击 **[导入设置]** 上传文件并**重启控制台**，就能立刻复刻您的所有高阶排版参数！

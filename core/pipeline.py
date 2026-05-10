@@ -725,6 +725,31 @@ def translate_and_render(
 
                     if not text or text.startswith("[Translation Error"):
                         continue
+                        
+                    orientation = "auto"
+                    if text_prob_map is not None:
+                        x1, y1, x2, y2 = [int(v) for v in bbox]
+                        h_max, w_max = text_prob_map.shape[:2]
+                        cx1, cx2 = max(0, x1), min(w_max, x2)
+                        cy1, cy2 = max(0, y1), min(h_max, y2)
+                        if cx2 > cx1 and cy2 > cy1:
+                            crop = text_prob_map[cy1:cy2, cx1:cx2]
+                            ys, xs = np.where(crop > 128)
+                            if len(ys) > 50:
+                                true_w = xs.max() - xs.min()
+                                true_h = ys.max() - ys.min()
+                                if true_h > true_w * 1.1:
+                                    orientation = "vertical"
+                                elif true_w > true_h * 1.1:
+                                    orientation = "horizontal"
+                    
+                    if orientation == "vertical":
+                        is_originally_vertical = True
+                    elif orientation == "horizontal":
+                        is_originally_vertical = False
+                    else:
+                        box_w, box_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                        is_originally_vertical = box_h > box_w * 1.05
 
                     if is_outside_text:
                         font_dir = (
@@ -1029,10 +1054,13 @@ def batch_translate_images(
 # 全新的高级批量处理架构 (Two-Pass Batch Architecture) - 支持导出/API直连/导入与智能原生竖排
 # =====================================================================================
 
-def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_color_rgb, padding_pixels=0, line_spacing_mult=1.0, ss_factor=1, outline_width=0.0, outline_color=(255,255,255), text_bbox=None, bubble_mask=None, is_osb=False):
+def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_color_rgb, padding_pixels=0, line_spacing_mult=1.0, ss_factor=1, outline_width=0.0, outline_color=(255,255,255), text_bbox=None, bubble_mask=None, is_osb=False, reading_direction="rtl", font_variants=None):
     from PIL import ImageDraw, ImageFont, Image
     import re
     import math
+    from core.text.text_processing import parse_styled_segments
+    
+    is_ltr = (reading_direction or "rtl").lower() == "ltr"
     
     SS = max(1, int(ss_factor))
     text = text.replace(" ", "").replace("\\n", "").replace("\\r", "")
@@ -1045,26 +1073,31 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
         'ー': '丨', '-': '丨', '—': '丨', '~': '丨',
         '…': '︙'
     }
-    for hz, vt in VERTICAL_SUBSTITUTIONS.items():
-        text = text.replace(hz, vt)
 
-    # Insert a half-space marker (\u200b) between English/Numbers and CJK characters
-    text = re.sub(r'([a-zA-Z0-9])([\u4e00-\u9fa5\u3040-\u30ff])', '\\1\u200b\\2', text)
-    text = re.sub(r'([\u4e00-\u9fa5\u3040-\u30ff])([a-zA-Z0-9])', '\\1\u200b\\2', text)
+    # Parse styles and apply substitutions per segment
+    styled_segments = parse_styled_segments(text)
+    char_styles = []
+    
+    for seg_text, style in styled_segments:
+        for hz, vt in VERTICAL_SUBSTITUTIONS.items():
+            seg_text = seg_text.replace(hz, vt)
+            
+        seg_text = re.sub(r'([a-zA-Z0-9])([\u4e00-\u9fa5\u3040-\u30ff])', '\\1\u200b\\2', seg_text)
+        seg_text = re.sub(r'([\u4e00-\u9fa5\u3040-\u30ff])([a-zA-Z0-9])', '\\1\u200b\\2', seg_text)
+        
+        for char in seg_text:
+            char_styles.append((char, style))
 
     x1, y1, x2, y2 = [int(v) for v in bbox]
     box_w, box_h = max(1, x2 - x1), max(1, y2 - y1)
     center_x = x1 + box_w / 2.0
     center_y = y1 + box_h / 2.0
     
-    # VISUAL CENTERING: If the original Japanese text bounding box is available,
-    # its exact center is always the most aesthetically pleasing anchor point for the new text.
     if text_bbox is not None and len(text_bbox) == 4:
         tx1, ty1, tx2, ty2 = [float(v) for v in text_bbox]
         center_x = tx1 + (tx2 - tx1) / 2.0
         center_y = ty1 + (ty2 - ty1) / 2.0
 
-    # Calculate symmetric safe width/height from the visual center to the YOLO box edges
     safe_w = max(10, 2 * min(center_x - x1, x2 - center_x) - padding_pixels * 2)
     safe_h = max(10, 2 * min(center_y - y1, y2 - center_y) - padding_pixels * 2)
 
@@ -1072,11 +1105,11 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
     line_spacing = BASE_FSIZE * 1.15 * line_spacing_mult 
     char_spacing = BASE_FSIZE * 1.05
     
-    # Calculate effective length considering half-spaces
-    N_effective = len(text) - 0.5 * text.count('\u200b')
+    clean_text = "".join(c for c, _ in char_styles)
+    N_effective = len(clean_text) - 0.5 * clean_text.count('\u200b')
     best_c = 1
     max_scale = 0
-    best_rows = len(text)
+    best_rows = len(clean_text)
 
     OSB_SIZE_BOOST = 1.0
     OSB_INTERNAL_PADDING = 2
@@ -1084,14 +1117,14 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
     if is_osb:
         safe_w = max(10, box_w - OSB_INTERNAL_PADDING * 2 - outline_width * 2)
         safe_h = max(10, box_h - OSB_INTERNAL_PADDING * 2 - outline_width * 2)
-        for c in range(1, len(text) + 1):
+        for c in range(1, len(clean_text) + 1):
             rows = math.ceil(N_effective / c)
             text_w_px = c * line_spacing
             text_h_px = rows * char_spacing
             scale = min(safe_w / text_w_px, safe_h / text_h_px)
             scale *= OSB_SIZE_BOOST
             if scale > max_scale:
-                max_scale = scale; best_c = c; best_rows = math.ceil(len(text) / c)
+                max_scale = scale; best_c = c; best_rows = math.ceil(len(clean_text) / c)
     else:
         def get_adaptive_ellipse_safe_ratio(width, height):
             max_dim = max(width, height)
@@ -1106,7 +1139,7 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
 
         ellipse_safety_ratio = get_adaptive_ellipse_safe_ratio(box_w, box_h)
 
-        for c in range(1, len(text) + 1):
+        for c in range(1, len(clean_text) + 1):
             rows = math.ceil(N_effective / c)
             text_w_px = c * line_spacing
             text_h_px = rows * char_spacing
@@ -1115,7 +1148,7 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
             if scale > max_scale:
                 max_scale = scale
                 best_c = c
-                best_rows = math.ceil(len(text) / c)
+                best_rows = math.ceil(len(clean_text) / c)
 
     effective_fsize = BASE_FSIZE * max_scale
     if effective_fsize > max_font:
@@ -1126,54 +1159,69 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
     ss_canvas = Image.new('RGBA', (canvas_w * SS, canvas_h * SS), (0,0,0,0))
     draw = ImageDraw.Draw(ss_canvas)
     
+    # Load fonts
+    fonts = {}
     try:
-        font = ImageFont.truetype(str(font_path), BASE_FSIZE * SS)
+        fonts["regular"] = ImageFont.truetype(str(font_path), BASE_FSIZE * SS)
     except:
-        font = ImageFont.load_default()
+        fonts["regular"] = ImageFont.load_default()
+        
+    if font_variants:
+        for st in ["bold", "italic", "bold_italic"]:
+            p = font_variants.get(st)
+            if p:
+                try:
+                    fonts[st] = ImageFont.truetype(str(p), BASE_FSIZE * SS)
+                except:
+                    pass
 
-    # Distribute characters to columns
+    # Distribute character tuples to columns
     cols = []
     current_col = []
     current_h = 0
-    # Add a small epsilon to canvas_h to prevent floating point issues causing premature wrapping
     max_col_h = canvas_h + 1e-5
-    for char in text:
+    for char, style in char_styles:
         add_h = char_spacing * 0.5 if char == '\u200b' else char_spacing
         if current_h + add_h > max_col_h and len(current_col) > 0:
             cols.append(current_col)
-            current_col = [char]
+            current_col = [(char, style)]
             current_h = add_h
         else:
-            current_col.append(char)
+            current_col.append((char, style))
             current_h += add_h
     if current_col:
         cols.append(current_col)
     
     out_w_ss = int((outline_width / max(1, BASE_FSIZE * max_scale)) * BASE_FSIZE * SS) if outline_width > 0 else 0
-    if out_w_ss > 0:
-        for col_idx, col_text in enumerate(cols):
-            cx = (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
-            col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char in col_text)
-            current_y = ((canvas_h - col_h) / 2) * SS
-            for char in col_text:
-                if char == '\u200b':
-                    current_y += char_spacing * SS * 0.5
-                    continue
-                cy = current_y + (char_spacing / 2) * SS
-                offset_x, offset_y = 0, 0
-                if char in ['「', '﹁', '『', '﹃']: offset_x, offset_y = BASE_FSIZE * SS * 0.1, -BASE_FSIZE * SS * 0.1
-                elif char in ['」', '﹂', '』', '﹄']: offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
-                elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']: offset_x, offset_y = BASE_FSIZE * SS * 0.25, 0
-                elif char in ['，', '。', '、']: offset_x, offset_y = BASE_FSIZE * SS * 0.5, -BASE_FSIZE * SS * 0.5
-                draw.text((cx + offset_x, cy + offset_y), char, font=font, fill=outline_color, anchor="mm", stroke_width=out_w_ss, stroke_fill=outline_color)
-                current_y += char_spacing * SS
+    fake_bold_stroke = int(BASE_FSIZE * SS * 0.04)
 
-    for col_idx, col_text in enumerate(cols):
-        cx = (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
-        col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char in col_text)
+    def draw_styled_char(target_img, target_draw, px, py, ch, fnt, f_color, s_width, s_color, do_italic):
+        if not do_italic:
+            if s_width > 0:
+                target_draw.text((px, py), ch, font=fnt, fill=f_color, anchor="mm", stroke_width=s_width, stroke_fill=s_color)
+            else:
+                target_draw.text((px, py), ch, font=fnt, fill=f_color, anchor="mm")
+        else:
+            box_size = int(BASE_FSIZE * SS * 2.5)
+            tmp = Image.new('RGBA', (box_size, box_size), (0,0,0,0))
+            tmp_draw = ImageDraw.Draw(tmp)
+            if s_width > 0:
+                tmp_draw.text((box_size//2, box_size//2), ch, font=fnt, fill=f_color, anchor="mm", stroke_width=s_width, stroke_fill=s_color)
+            else:
+                tmp_draw.text((box_size//2, box_size//2), ch, font=fnt, fill=f_color, anchor="mm")
+            
+            shear = 0.25
+            a, b, c = 1, shear, -shear * (box_size//2)
+            d, e, f = 0, 1, 0
+            tmp_sheared = tmp.transform((box_size, box_size), Image.Transform.AFFINE, (a, b, c, d, e, f), resample=Image.Resampling.BICUBIC)
+            target_img.paste(tmp_sheared, (int(px - box_size//2), int(py - box_size//2)), tmp_sheared)
+
+    # Draw Outlines
+    for col_idx, col_chars in enumerate(cols):
+        cx = (col_idx * line_spacing + line_spacing / 2) * SS if is_ltr else (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
+        col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char, _ in col_chars)
         current_y = ((canvas_h - col_h) / 2) * SS
-        
-        for char in col_text:
+        for char, style in col_chars:
             if char == '\u200b':
                 current_y += char_spacing * SS * 0.5
                 continue
@@ -1183,8 +1231,38 @@ def render_vertical_text_pil(pil_image, text, bbox, font_path, max_font, text_co
             elif char in ['」', '﹂', '』', '﹄']: offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
             elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']: offset_x, offset_y = BASE_FSIZE * SS * 0.25, 0
             elif char in ['，', '。', '、']: offset_x, offset_y = BASE_FSIZE * SS * 0.5, -BASE_FSIZE * SS * 0.5
-            draw.text((cx + offset_x, cy + offset_y), char, font=font, fill=text_color_rgb, anchor="mm")
             
+            font = fonts.get(style, fonts.get("bold" if "bold" in style else "regular", fonts["regular"]))
+            stroke_w = out_w_ss
+            if "bold" in style and style not in fonts:
+                stroke_w += fake_bold_stroke
+            is_italic = "italic" in style and style not in fonts
+                
+            if stroke_w > 0:
+                draw_styled_char(ss_canvas, draw, cx + offset_x, cy + offset_y, char, font, outline_color, stroke_w, outline_color, is_italic)
+            current_y += char_spacing * SS
+
+    # Draw Text
+    for col_idx, col_chars in enumerate(cols):
+        cx = (col_idx * line_spacing + line_spacing / 2) * SS if is_ltr else (canvas_w - col_idx * line_spacing - line_spacing / 2) * SS
+        col_h = sum(char_spacing * 0.5 if char == '\u200b' else char_spacing for char, _ in col_chars)
+        current_y = ((canvas_h - col_h) / 2) * SS
+        for char, style in col_chars:
+            if char == '\u200b':
+                current_y += char_spacing * SS * 0.5
+                continue
+            cy = current_y + (char_spacing / 2) * SS
+            offset_x, offset_y = 0, 0
+            if char in ['「', '﹁', '『', '﹃']: offset_x, offset_y = BASE_FSIZE * SS * 0.1, -BASE_FSIZE * SS * 0.1
+            elif char in ['」', '﹂', '』', '﹄']: offset_x, offset_y = -BASE_FSIZE * SS * 0.1, BASE_FSIZE * SS * 0.1
+            elif char in ['！', '？', '!', '?', '‼️', '⁉️', '⁈', '❕']: offset_x, offset_y = BASE_FSIZE * SS * 0.25, 0
+            elif char in ['，', '。', '、']: offset_x, offset_y = BASE_FSIZE * SS * 0.5, -BASE_FSIZE * SS * 0.5
+            
+            font = fonts.get(style, fonts.get("bold" if "bold" in style else "regular", fonts["regular"]))
+            stroke_w = fake_bold_stroke if "bold" in style and style not in fonts else 0
+            is_italic = "italic" in style and style not in fonts
+                
+            draw_styled_char(ss_canvas, draw, cx + offset_x, cy + offset_y, char, font, text_color_rgb, stroke_w, text_color_rgb, is_italic)
             current_y += char_spacing * SS
 
     final_w = int(canvas_w * max_scale)
@@ -1386,14 +1464,41 @@ def extract_batch_script(input_dir, config, output_dir, cancellation_manager=Non
         
         page_items = []
         for i, item in enumerate(sorted_items):
-            text = extracted_texts[i] if i < len(extracted_texts) else ""
+            res = extracted_texts[i] if i < len(extracted_texts) else ""
+            orientation = "auto"
+            
+            if isinstance(res, dict):
+                text = res.get("text", "")
+                orientation = res.get("orientation", "auto")
+            else:
+                text = res
+                
             if text == "[OCR FAILED]": text = ""
             text = " ".join(text.split())
+            
+            bbox = item["bbox"]
+            if orientation == "auto" and text_prob_map is not None:
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                h_max, w_max = text_prob_map.shape[:2]
+                cx1, cx2 = max(0, x1), min(w_max, x2)
+                cy1, cy2 = max(0, y1), min(h_max, y2)
+                if cx2 > cx1 and cy2 > cy1:
+                    crop = text_prob_map[cy1:cy2, cx1:cx2]
+                    ys, xs = np.where(crop > 0.5)
+                    if len(ys) > 50:
+                        true_w = xs.max() - xs.min()
+                        true_h = ys.max() - ys.min()
+                        if true_h > true_w * 1.1:
+                            orientation = "vertical"
+                        elif true_w > true_h * 1.1:
+                            orientation = "horizontal"
+                            
             page_items.append({
                 "id": i + 1,
-                "bbox": item["bbox"],
+                "bbox": bbox,
                 "is_outside_text": item.get("is_outside_text", False),
                 "original_text": text,
+                "orientation": orientation,
                 "translated_text": ""
             })
         global_script["pages"][img_path.relative_to(input_dir).as_posix()] = page_items
@@ -1654,8 +1759,10 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
         sorted_items = sort_bubbles_by_reading_order(all_text_data, config.translation.reading_direction, panels=panels)
         
         json_translations = {item["id"]: item["translated_text"] for item in items}
+        json_orientations = {item["id"]: item.get("orientation", "auto") for item in items}
         for i, bubble in enumerate(sorted_items):
             bubble["translation"] = json_translations.get(i + 1, "")
+            bubble["orientation"] = json_orientations.get(i + 1, "auto")
             
         cleaned_image_cv, processed_bubbles_info = clean_speech_bubbles(
             pil_image, config.yolo_model_path, config.detection.confidence,
@@ -1699,7 +1806,32 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
             bbox = bubble["bbox"]
             is_osb = bubble.get("is_outside_text", False)
             box_w, box_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            is_originally_vertical = box_h > box_w * 1.05
+            
+            orientation = bubble.get("orientation", "auto")
+            
+            # Apply text pixel density logic if orientation is unknown or auto
+            if orientation in ("auto", "unknown") and text_prob_map is not None:
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                h_max, w_max = text_prob_map.shape[:2]
+                cx1, cx2 = max(0, x1), min(w_max, x2)
+                cy1, cy2 = max(0, y1), min(h_max, y2)
+                if cx2 > cx1 and cy2 > cy1:
+                    crop = text_prob_map[cy1:cy2, cx1:cx2]
+                    ys, xs = np.where(crop > 128)
+                    if len(ys) > 50:
+                        true_w = xs.max() - xs.min()
+                        true_h = ys.max() - ys.min()
+                        if true_h > true_w * 1.1:
+                            orientation = "vertical"
+                        elif true_w > true_h * 1.1:
+                            orientation = "horizontal"
+
+            if orientation == "vertical":
+                is_originally_vertical = True
+            elif orientation == "horizontal":
+                is_originally_vertical = False
+            else:
+                is_originally_vertical = box_h > box_w * 1.05
             
             if is_osb:
                 font_dir = config.outside_text.osb_font_dir if config.outside_text.osb_font_dir else config.rendering.font_dir
@@ -1774,7 +1906,9 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
                             outline_width=outline_w, outline_color=outline_color,
                             text_bbox=text_bbox,
                             bubble_mask=extended_collision_mask if not is_osb else None,
-                            is_osb=is_osb # 传入关键参数！
+                            is_osb=is_osb,
+                            reading_direction=config.translation.reading_direction,
+                            font_variants=font_variants
                         )
                     else:
                         log_message(f"No valid .ttf found in {font_dir}", always_print=True)

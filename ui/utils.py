@@ -42,7 +42,7 @@ def get_available_providers(ocr_method: str) -> List[str]:
     """Get list of available providers based on OCR method."""
     all_providers = list(PROVIDER_MODELS.keys())
 
-    if ocr_method in ("manga-ocr", "paddleocr-vl"):
+    if ocr_method in ("paddleocr-vl",):
         return all_providers
     else:
         # For LLM OCR, exclude text-only providers (DeepSeek)
@@ -731,7 +731,7 @@ def update_translation_ui(provider: str, _current_temp: float, ocr_method: str =
     Args:
         provider: The selected translation provider
         _current_temp: Current temperature value (unused but kept for compatibility)
-        ocr_method: OCR method ("LLM", "manga-ocr", or "paddleocr-vl"). Used to filter vision-only models.
+        ocr_method: OCR method ("LLM" or "paddleocr-vl"). Used to filter vision-only models.
     """
     saved_settings = get_saved_settings()
     provider_models_dict = saved_settings.get(
@@ -1143,7 +1143,7 @@ def fetch_and_update_openrouter_models(
     """Fetches models from OpenRouter API and updates dropdown.
 
     Args:
-        ocr_method: "LLM" for vision-capable models, "manga-ocr"/"paddleocr-vl" for text-only models
+        ocr_method: "LLM" for vision-capable models, "paddleocr-vl" for text-only models
     """
     global OPENROUTER_MODEL_CACHE
     verbose = get_saved_settings().get("verbose", False)
@@ -1187,7 +1187,7 @@ def fetch_and_update_openrouter_models(
             output_modalities = []
         output_modalities_lc = [str(m).lower() for m in output_modalities]
 
-        if ocr_method in ("manga-ocr", "paddleocr-vl"):
+        if ocr_method in ("paddleocr-vl",):
             # For local OCR: require text input and text output
             if "text" in input_modalities_lc and "text" in output_modalities_lc:
                 filtered_models.append(model["id"])

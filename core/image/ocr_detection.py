@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -822,7 +822,7 @@ def _get_paddle_ocr_vl_size(processor, max_pixels: int) -> dict:
 
 def extract_text_with_paddle_ocr_vl(
     images: List[Image.Image], verbose: bool = False
-) -> List[str]:
+) -> List[Union[str, dict]]:
     """Extract text from images using PaddleOCR-VL-1.5.
 
     Args:
@@ -830,8 +830,9 @@ def extract_text_with_paddle_ocr_vl(
         verbose: Whether to print verbose output
 
     Returns:
-        List of extracted text strings (one per image). Returns [OCR FAILED] on errors.
+        List of extracted text dicts (or strings for failures).
     """
+    import re
     if not images:
         return []
 
@@ -839,13 +840,15 @@ def extract_text_with_paddle_ocr_vl(
         model_manager = get_model_manager()
         processor, model = model_manager.get_paddle_ocr_vl(verbose=verbose)
 
-        extracted_texts = ["[OCR FAILED]"] * len(images)
+        extracted_results = ["[OCR FAILED]"] * len(images)
         batch_size = 12  # Process in batches for massive performance gain
 
         for i in range(0, len(images), batch_size):
             batch_imgs = images[i : i + batch_size]
             valid_indices = []
-            messages_batch = []
+            
+            messages_batch_ocr = []
+            messages_batch_spotting = []
 
             for j, img in enumerate(batch_imgs):
                 if img is None:
@@ -855,7 +858,8 @@ def extract_text_with_paddle_ocr_vl(
                     )
                     continue
                 valid_indices.append(j)
-                messages_batch.append(
+                
+                messages_batch_ocr.append(
                     [
                         {
                             "role": "user",
@@ -866,18 +870,32 @@ def extract_text_with_paddle_ocr_vl(
                         }
                     ]
                 )
+                
+                messages_batch_spotting.append(
+                    [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": img},
+                                {"type": "text", "text": "Spotting:"},
+                            ],
+                        }
+                    ]
+                )
 
-            if not messages_batch:
+            if not messages_batch_ocr:
                 continue
 
             log_message(
-                f"Processing images {i + 1} to {min(i + batch_size, len(images))}/{len(images)} with PaddleOCR-VL-1.5 (Batched)",
+                f"Processing images {i + 1} to {min(i + batch_size, len(images))}/{len(images)} with PaddleOCR-VL-1.5 (Pass 1/2: OCR)",
                 verbose=verbose,
             )
 
+            # Pass 1: OCR
+            texts = [""] * len(valid_indices)
             try:
                 inputs = processor.apply_chat_template(
-                    messages_batch,
+                    messages_batch_ocr,
                     add_generation_prompt=True,
                     tokenize=True,
                     return_dict=True,
@@ -886,8 +904,6 @@ def extract_text_with_paddle_ocr_vl(
                 ).to(model.device)
 
                 with torch.no_grad():
-                    # Limit max_new_tokens to 256 and add repetition_penalty to prevent
-                    # the VLM from falling into an infinite hallucination loop on empty backgrounds.
                     outputs = model.generate(
                         **inputs, 
                         max_new_tokens=256,
@@ -899,24 +915,156 @@ def extract_text_with_paddle_ocr_vl(
                         torch.cuda.synchronize()
 
                 for j, out_tokens in enumerate(outputs):
-                    idx_in_batch = valid_indices[j]
                     text = processor.decode(out_tokens[inputs["input_ids"].shape[-1] :], skip_special_tokens=True)
-                    extracted_texts[i + idx_in_batch] = text.strip() if text else ""
+                    texts[j] = text.strip() if text else ""
                     
-                del inputs
-                del outputs
+                del inputs, outputs
                 import gc
                 gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
             except Exception as e:
-                log_message(
-                    f"PaddleOCR-VL-1.5 batch {i + 1} to {min(i + batch_size, len(images))} failed: {e}",
-                    always_print=True,
-                )
+                log_message(f"Pass 1 (OCR) failed: {e}", always_print=True)
 
-        return extracted_texts
+            log_message(
+                f"Processing images {i + 1} to {min(i + batch_size, len(images))}/{len(images)} with PaddleOCR-VL-1.5 (Pass 2/2: Spotting)",
+                verbose=verbose,
+            )
+            
+            # Pass 2: Spotting
+            orientations = ["auto"] * len(valid_indices)
+            try:
+                inputs_spot = processor.apply_chat_template(
+                    messages_batch_spotting,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    padding=True,
+                ).to(model.device)
+
+                with torch.no_grad():
+                    outputs_spot = model.generate(
+                        **inputs_spot, 
+                        max_new_tokens=256,
+                        repetition_penalty=1.15,
+                        pad_token_id=processor.tokenizer.pad_token_id if hasattr(processor, "tokenizer") else None,
+                        eos_token_id=processor.tokenizer.eos_token_id if hasattr(processor, "tokenizer") else None
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+
+                for j, out_tokens in enumerate(outputs_spot):
+                    raw_text = processor.decode(out_tokens[inputs_spot["input_ids"].shape[-1] :], skip_special_tokens=False)
+                    pattern = r'(.*?)((?:<\|LOC_\d+\|>\s*){8})'
+                    matches = re.findall(pattern, raw_text, re.DOTALL)
+                    
+                    if matches:
+                        lines_info = []
+                        for m in matches:
+                            coords = [int(x) for x in re.findall(r'\d+', m[1])]
+                            if len(coords) == 8:
+                                x1, y1, x2, y2, x3, y3, x4, y4 = coords
+                                box_w = max(x1, x2, x3, x4) - min(x1, x2, x3, x4)
+                                box_h = max(y1, y2, y3, y4) - min(y1, y2, y3, y4)
+                                
+                                box_w = max(box_w, 1) # Prevent division by zero
+                                ratio = box_h / box_w
+                                
+                                if ratio > 1.25:
+                                    lines_info.append("vertical")
+                                elif ratio < 0.80:
+                                    lines_info.append("horizontal")
+                                else:
+                                    lines_info.append("ambiguous")
+                            
+                        if lines_info:
+                            vert_count = lines_info.count("vertical")
+                            horiz_count = lines_info.count("horizontal")
+                            
+                            if vert_count > horiz_count:
+                                orientations[j] = "vertical"
+                            elif horiz_count > vert_count:
+                                orientations[j] = "horizontal"
+                            else:
+                                orientations[j] = "needs_vqa"
+                        else:
+                            orientations[j] = "needs_vqa"
+                    else:
+                        orientations[j] = "needs_vqa"
+                    
+                del inputs_spot, outputs_spot
+                import gc
+                gc.collect()
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+            except Exception as e:
+                log_message(f"Pass 2 (Spotting) failed: {e}", always_print=True)
+
+            # Pass 3: VQA for ambiguous orientations
+            vqa_indices = [j for j, o in enumerate(orientations) if o == "needs_vqa"]
+            if vqa_indices:
+                log_message(
+                    f"Processing {len(vqa_indices)} ambiguous images with PaddleOCR-VL-1.5 (Pass 3/3: VQA Orientation)",
+                    verbose=verbose,
+                )
+                messages_batch_vqa = []
+                for j in vqa_indices:
+                    messages_batch_vqa.append([
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": batch_imgs[j]},
+                                {"type": "text", "text": "Is the text layout in this image horizontal or vertical? Answer with exactly 'horizontal' or 'vertical'."},
+                            ],
+                        }
+                    ])
+                
+                try:
+                    inputs_vqa = processor.apply_chat_template(
+                        messages_batch_vqa,
+                        add_generation_prompt=True,
+                        tokenize=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                        padding=True,
+                    ).to(model.device)
+
+                    with torch.no_grad():
+                        outputs_vqa = model.generate(
+                            **inputs_vqa, 
+                            max_new_tokens=10,
+                            pad_token_id=processor.tokenizer.pad_token_id if hasattr(processor, "tokenizer") else None,
+                            eos_token_id=processor.tokenizer.eos_token_id if hasattr(processor, "tokenizer") else None
+                        )
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+
+                    for idx, out_tokens in enumerate(outputs_vqa):
+                        original_j = vqa_indices[idx]
+                        vqa_text = processor.decode(out_tokens[inputs_vqa["input_ids"].shape[-1] :], skip_special_tokens=True).lower()
+                        
+                        if "vertical" in vqa_text or "竖" in vqa_text:
+                            orientations[original_j] = "vertical"
+                        elif "horizontal" in vqa_text or "横" in vqa_text:
+                            orientations[original_j] = "horizontal"
+                        else:
+                            orientations[original_j] = "unknown"
+
+                    del inputs_vqa, outputs_vqa
+                    gc.collect()
+                    if torch.cuda.is_available(): torch.cuda.empty_cache()
+                except Exception as e:
+                    log_message(f"Pass 3 (VQA) failed: {e}", always_print=True)
+                    for j in vqa_indices:
+                        orientations[j] = "unknown"
+
+            # Combine
+            for j, original_idx in enumerate(valid_indices):
+                extracted_results[i + original_idx] = {
+                    "text": texts[j],
+                    "orientation": orientations[j]
+                }
+
+        return extracted_results
 
     except Exception as e:
         log_message(f"Error with PaddleOCR-VL-1.5: {e}", always_print=True)

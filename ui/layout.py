@@ -278,7 +278,7 @@ def create_layout(
                             filterable=False,
                         )
                         with gr.Accordion("翻译设定", open=True):
-                            # Hidden state to store original language selection before manga-ocr forces Japanese
+                            # Hidden state to store original language selection
                             original_language_state = gr.State(
                                 value=lambda k="input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d)
                             )
@@ -343,7 +343,7 @@ def create_layout(
                             filterable=False,
                         )
                         with gr.Accordion("翻译设定", open=True):
-                            # Hidden state to store original language selection before manga-ocr forces Japanese
+                            # Hidden state to store original language selection
                             batch_original_language_state = gr.State(
                                 value=lambda k="batch_input_language", d="Japanese": settings_manager.get_saved_settings().get(k, d)
                             )
@@ -637,7 +637,7 @@ def create_layout(
                                 ),
                             )
                             ocr_method_radio = gr.Radio(
-                                choices=["LLM", "manga-ocr", "paddleocr-vl"],
+                                choices=["LLM", "paddleocr-vl"],
                                 label="OCR 方法 (光学字符识别)",
                                 value=initial_ocr_method,
                                 info=None,
@@ -931,7 +931,7 @@ def create_layout(
                                 info="Allow Gemini 3 Flash to zoom and inspect image details using code execution.",
                                 visible=_initial_enable_code_execution_visible,
                                 interactive=initial_ocr_method
-                                not in ("manga-ocr", "paddleocr-vl"),
+                                != "paddleocr-vl",
                                 elem_id="enable_code_execution_checkbox",
                             )
 
@@ -950,7 +950,7 @@ def create_layout(
                                 value=initial_image_detail_value,
                                 info=_id_info,
                                 visible=_id_visible,
-                                interactive=initial_ocr_method not in ("manga-ocr", "paddleocr-vl"),
+                                interactive=initial_ocr_method != "paddleocr-vl",
                                 elem_id="image_detail_dropdown",
                             )
 
@@ -1057,7 +1057,7 @@ def create_layout(
                                 label="将全页图像作为上下文发送",
                                 info=None,
                                 interactive=initial_ocr_method
-                                not in ("manga-ocr", "paddleocr-vl"),
+                                != "paddleocr-vl",
                             )
                             whiteout_conjoined_bubbles = gr.Checkbox(
                                 value=lambda k="whiteout_conjoined_bubbles", d=True: settings_manager.get_saved_settings().get(k, d),

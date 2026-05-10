@@ -350,6 +350,15 @@ def draw_layout(
                     skia_font_segment = skia.Font(typeface_to_use, final_font_size)
                     skia_font_segment.setSubpixel(use_subpixel_rendering)
                     skia_font_segment.setHinting(skia_hinting)
+                    
+                    # Synthesize missing styles if we had to fallback to regular or a lesser style
+                    if fallback_style_used or style_name != "regular":
+                        # If we wanted bold but ended up with regular or italic
+                        if "bold" in style_name and (fallback_style_used in ["regular", "italic"] or typeface_to_use == regular_typeface):
+                            skia_font_segment.setEmbolden(True)
+                        # If we wanted italic but ended up with regular or bold
+                        if "italic" in style_name and (fallback_style_used in ["regular", "bold"] or typeface_to_use == regular_typeface):
+                            skia_font_segment.setSkewX(-0.25)
 
                     hb_font_segment = hb.Font(hb_face_to_use)
                     hb_font_segment.ptem = float(final_font_size)
