@@ -9,6 +9,7 @@ from core.text.text_processing import (
     STYLE_PATTERN,
     find_optimal_breaks_dp,
     find_optimal_breaks_contour_dp,
+    is_cjk_character,
     parse_styled_segments,
     tokenize_styled_text,
     try_hyphenate_word,
@@ -18,6 +19,23 @@ from utils.logging import log_message
 
 # Epsilon to guard rounding when converting from HarfBuzz 26.6 fixed-point.
 VISUAL_WIDTH_EPSILON = 0.0
+
+
+def _is_predominantly_cjk(text: str) -> bool:
+    """Check if text is predominantly CJK characters (Chinese/Japanese/Korean).
+
+    Used to skip the degenerate-vertical heuristic for CJK text, since square
+    CJK glyphs look perfectly natural even with one character per line.
+    """
+    cjk_count = 0
+    total_count = 0
+    for ch in text:
+        if ch.isspace():
+            continue
+        total_count += 1
+        if is_cjk_character(ch):
+            cjk_count += 1
+    return total_count > 0 and cjk_count / total_count >= 0.5
 
 
 def shape_line(
@@ -710,8 +728,9 @@ def find_optimal_layout(
                 # REJECT layouts that degenerate into vertical columns if it's supposed to be horizontal text
                 # i.e., if max_line_width is very small compared to line_height, it means 1 char per line.
                 # Only apply this penalty if there are multiple characters and multiple lines.
+                # Skip this check for CJK text: square glyphs look natural even at 1 char per line.
                 is_degenerate_vertical = False
-                if len(fit_data["lines"]) > 1 and len(clean_text) > 1:
+                if len(fit_data["lines"]) > 1 and len(clean_text) > 1 and not _is_predominantly_cjk(clean_text):
                     if len(clean_text) <= 3:
                         # For 2 or 3 characters, any wrapping makes it look vertical. Force 1 line.
                         is_degenerate_vertical = True

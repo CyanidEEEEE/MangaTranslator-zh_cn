@@ -168,7 +168,7 @@ def clamp_settings(settings: Any) -> Any:
 def autodetect_yolo_model_path(
     models_dir: Path, bubble_detector_model: str = "yolo_1"
 ) -> Path:
-    """Returns the path for the primary YOLO speech bubble model.
+    """Returns the path for the primary speech bubble detector model.
 
     This function provides a consistent path for the model, which will be
     auto-downloaded by the ModelManager if it doesn't exist. It does not
@@ -178,7 +178,13 @@ def autodetect_yolo_model_path(
     yolo_dir = models_dir / "yolo"
     if bubble_detector_model == "yolo_2":
         return yolo_dir / "manga109-segmentation-bubble.pt"
-    return yolo_dir / "yolov8m_seg-speech-bubble.pt"
+    if bubble_detector_model == "yolo_3":
+        return yolo_dir / "comic-speech-bubble-detector-yolov8m.pt"
+    if bubble_detector_model == "yolo_1":
+        return yolo_dir / "yolov8m_seg-speech-bubble.pt"
+    raise ValidationError(
+        "Unknown bubble detector model. Must be one of: yolo_1, yolo_2, yolo_3."
+    )
 
 
 def validate_core_inputs(
@@ -196,7 +202,7 @@ def validate_core_inputs(
         rendering_cfg (RenderingConfig): Rendering configuration.
         models_dir (Path): Absolute path to the directory containing YOLO models.
         fonts_base_dir (Path): Absolute path to the base directory containing font packs.
-        bubble_detector_model (str): Which bubble detector to use ("yolo_1" or "yolo_2").
+        bubble_detector_model (str): Which bubble detector to use ("yolo_1", "yolo_2", or "yolo_3").
 
     Returns:
         tuple[Path, Path]: Validated absolute path to the YOLO model and font directory.

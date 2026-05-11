@@ -166,24 +166,83 @@ def render_text_skia(
             target_center_y = ty1 + (ty2 - ty1) / 2.0
             log_message("Using original text_bbox centroid for visual centering", verbose=verbose)
 
-        # Compute fill ratio to determine if this is a rectangle or an ellipse
-        mask_crop = safe_area_mask_for_collision[box_y:box_y+box_h, box_x:box_x+box_w]
-        if mask_crop.size > 0:
-            fill_ratio = np.count_nonzero(mask_crop) / mask_crop.size
-        else:
-            fill_ratio = 1.0
+        # When collision mask is available, use the mask's actual extent for sizing
+        # instead of the guaranteed inscribed rectangle, which is overly conservative
+        # for irregular shapes (starburst, spiky bubbles). The collision mask will
+        # still enforce the true shape constraint during contour wrapping in layout.
+        sizing_w, sizing_h = box_w, box_h
+        expansion_ratio = 1.0
+        if safe_area_mask_for_collision is not None:
+            mask_ys, mask_xs = np.where(safe_area_mask_for_collision > 0)
+            if len(mask_ys) > 0:
+                mask_extent_w = float(mask_xs.max() - mask_xs.min())
+                mask_extent_h = float(mask_ys.max() - mask_ys.min())
+                # Use the larger of guaranteed box and mask extent for sizing
+                # This prevents starburst bubbles from being overly constrained
+                sizing_w = max(box_w, mask_extent_w)
+                sizing_h = max(box_h, mask_extent_h)
+                if sizing_w > box_w or sizing_h > box_h:
+                    log_message(
+                        f"Expanded sizing from guaranteed box {box_w:.0f}x{box_h:.0f} "
+                        f"to mask extent {sizing_w:.0f}x{sizing_h:.0f}",
+                        verbose=verbose,
+                    )
+                    # When the mask extent is significantly larger than the guaranteed
+                    # box (e.g., starburst bubbles where centroid was moved to pole of
+                    # inaccessibility), the box center is unreliable. Recenter to the
+                    # mask's geometric center for better text placement.
+                    expansion_ratio = max(
+                        sizing_w / max(1, box_w), sizing_h / max(1, box_h)
+                    )
+                    if text_bbox is None and expansion_ratio > 1.3:
+                        mask_center_x = float(mask_xs.min() + mask_xs.max()) / 2.0
+                        mask_center_y = float(mask_ys.min() + mask_ys.max()) / 2.0
+                        log_message(
+                            f"Recentering target from ({target_center_x:.0f}, {target_center_y:.0f}) "
+                            f"to mask center ({mask_center_x:.0f}, {mask_center_y:.0f})",
+                            verbose=verbose,
+                        )
+                        target_center_x = mask_center_x
+                        target_center_y = mask_center_y
 
-        # Map fill_ratio: 1.0 (rectangle) -> 0.95, 0.785 (ellipse) -> 0.75
-        width_factor = 0.75 + (fill_ratio - 0.785) * (0.95 - 0.75) / (1.0 - 0.785)
-        width_factor = max(0.65, min(0.95, width_factor))
+        # Compute fill ratio to determine if this is a rectangle or an ellipse
+        if expansion_ratio > 1.3:
+            # For highly irregular shapes (starburst, spiky), the fill_ratio over the
+            # full extent is naturally low and shouldn't penalize width. The collision
+            # mask's contour wrapping already prevents text from exceeding bubble bounds,
+            # so use a generous flat width_factor as the sizing is just a search bound.
+            fill_ratio = 0.85
+            width_factor = 0.85
+        else:
+            # Normal bubbles: compute fill ratio over the mask region
+            if safe_area_mask_for_collision is not None and len(mask_ys) > 0:
+                fill_cx = int(round((mask_xs.min() + mask_xs.max()) / 2.0))
+                fill_cy = int(round((mask_ys.min() + mask_ys.max()) / 2.0))
+                fill_hw = int(round(sizing_w / 2.0))
+                fill_hh = int(round(sizing_h / 2.0))
+                crop_y0 = max(0, fill_cy - fill_hh)
+                crop_y1_end = min(safe_area_mask_for_collision.shape[0], fill_cy + fill_hh)
+                crop_x0 = max(0, fill_cx - fill_hw)
+                crop_x1_end = min(safe_area_mask_for_collision.shape[1], fill_cx + fill_hw)
+                mask_crop = safe_area_mask_for_collision[crop_y0:crop_y1_end, crop_x0:crop_x1_end]
+            else:
+                mask_crop = safe_area_mask_for_collision[box_y:box_y+box_h, box_x:box_x+box_w]
+            if mask_crop.size > 0:
+                fill_ratio = np.count_nonzero(mask_crop) / mask_crop.size
+            else:
+                fill_ratio = 1.0
+
+            # Map fill_ratio: 1.0 (rectangle) -> 0.95, 0.785 (ellipse) -> 0.75
+            width_factor = 0.75 + (fill_ratio - 0.785) * (0.95 - 0.75) / (1.0 - 0.785)
+            width_factor = max(0.65, min(0.95, width_factor))
 
         # Give wide bubbles a bit more width allowance
-        bubble_aspect = box_w / max(1, box_h)
+        bubble_aspect = sizing_w / max(1, sizing_h)
         if bubble_aspect > 1.2:
             width_factor = min(0.98, width_factor * 1.15)
 
-        max_render_width = float(box_w) * width_factor
-        max_render_height = float(box_h) * 0.9
+        max_render_width = float(sizing_w) * width_factor
+        max_render_height = float(sizing_h) * 0.9
         log_message(f"Using centroid-based safe area. Fill ratio: {fill_ratio:.2f}, width factor: {width_factor:.2f}", verbose=verbose)
     else:
         # 修复方案：让回退逻辑也使用用户设置的绝对像素值

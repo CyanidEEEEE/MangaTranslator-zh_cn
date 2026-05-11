@@ -8,6 +8,7 @@ from PIL import Image
 
 from core.caching import get_cache
 from core.device import get_best_device
+from core.image.image_utils import read_image_cv2
 from core.ml.model_manager import ModelType, get_model_manager
 from utils.exceptions import ImageProcessingError, ModelError
 from utils.logging import log_message
@@ -1253,6 +1254,15 @@ def _build_segmentation_detections(
             osb_text_boxes=group_osb,
         )
 
+        # Clip each split mask to its individual detection bbox to prevent
+        # SAM mask leakage from one bubble into an adjacent one.  The
+        # _expand_resolved_masks_within_parent step can grow masks beyond
+        # individual bboxes; this clipping keeps each bubble's mask bounded.
+        for sm_idx, box in enumerate(group_boxes):
+            if sm_idx < len(split_masks):
+                box_clip = _build_rect_mask_from_box(box, img_h, img_w)
+                split_masks[sm_idx] = np.where(box_clip > 0, split_masks[sm_idx], 0)
+
         group_bboxes = []
         for b in group_boxes:
             bx0, by0, bx1, by1 = b.tolist() if hasattr(b, "tolist") else b
@@ -1332,7 +1342,7 @@ def detect_speech_bubbles(
             )
             image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         else:
-            image_cv = cv2.imread(str(image_path))
+            image_cv = read_image_cv2(image_path)
             if image_cv is None:
                 raise ImageProcessingError(f"Could not read image at {image_path}")
             image_pil = Image.fromarray(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
@@ -1347,7 +1357,7 @@ def detect_speech_bubbles(
     cache = get_cache()
     try:
         primary_model = model_manager.load_yolo_speech_bubble(model_path)
-        log_message(f"Loaded primary YOLO model: {model_path}", verbose=verbose)
+        log_message(f"Loaded primary detector model: {model_path}", verbose=verbose)
     except Exception as e:
         raise ModelError(f"Error loading primary model: {e}")
 
@@ -1359,13 +1369,19 @@ def detect_speech_bubbles(
         primary_results, primary_boxes = cached_yolo
     else:
         primary_imgsz = 1600 if bubble_detector_model == "yolo_2" else 640
+        kwargs = {
+            "conf": confidence,
+            "device": _device,
+            "verbose": False,
+            "imgsz": primary_imgsz,
+            "retina_masks": True,
+        }
+        if bubble_detector_model == "yolo_3":
+            kwargs["classes"] = [0]
+            
         primary_results = primary_model(
             image_cv,
-            conf=confidence,
-            device=_device,
-            verbose=False,
-            imgsz=primary_imgsz,
-            retina_masks=True,
+            **kwargs
         )[0]
         primary_boxes = (
             primary_results.boxes.xyxy
@@ -1406,7 +1422,8 @@ def detect_speech_bubbles(
         return detections, text_free_boxes
 
     log_message(
-        f"Detected {len(primary_boxes)} speech bubbles with YOLO", always_print=True
+        f"Detected {len(primary_boxes)} speech bubbles with primary detector",
+        always_print=True,
     )
 
     secondary_boxes = torch.tensor([])
@@ -1417,7 +1434,7 @@ def detect_speech_bubbles(
         try:
             secondary_model = model_manager.load_yolo_conjoined_bubble()
             log_message(
-                "Loaded secondary YOLO model for conjoined/fallback detection",
+                "Loaded secondary detector for conjoined/fallback detection",
                 verbose=verbose,
             )
 
@@ -1869,7 +1886,7 @@ def detect_panels(
             )
             image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         else:
-            image_cv = cv2.imread(str(image_path))
+            image_cv = read_image_cv2(image_path)
             if image_cv is None:
                 raise ImageProcessingError(f"Could not read image at {image_path}")
             image_pil = Image.fromarray(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))

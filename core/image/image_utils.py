@@ -56,6 +56,34 @@ def cv2_to_pil(cv2_image):
     return Image.fromarray(cv2_image)
 
 
+def read_image_cv2(image_path, flags=cv2.IMREAD_COLOR):
+    """Read an image with OpenCV decoding while supporting Unicode paths on Windows."""
+    try:
+        image_bytes = Path(image_path).read_bytes()
+        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        if image_array.size == 0:
+            return None
+        return cv2.imdecode(image_array, flags)
+    except (OSError, cv2.error, ValueError):
+        return None
+
+
+def write_image_cv2(image_path, image, params=None):
+    """Write an OpenCV image while supporting Unicode paths on Windows."""
+    try:
+        output_path = Path(image_path)
+        extension = output_path.suffix or ".png"
+        encode_params = [] if params is None else params
+        is_success, buffer = cv2.imencode(extension, image, encode_params)
+        if not is_success:
+            return False
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(buffer.tobytes())
+        return True
+    except (OSError, cv2.error, ValueError):
+        return False
+
+
 def save_image_with_compression(
     image, output_path, jpeg_quality=95, png_compression=2, verbose=False
 ):
@@ -182,10 +210,23 @@ def calculate_centroid_expansion_box(
         raise ImageProcessingError("Invalid or empty mask provided")
 
     try:
-        padded_mask = np.zeros(
-            (cleaned_mask.shape[0] + 2, cleaned_mask.shape[1] + 2), dtype=np.uint8
+        # Fill internal holes (e.g., text remnants) in the mask before computing
+        # the distance transform. SAM masks can retain text-shaped holes from the
+        # original text, which artificially shrink the safe area.
+        work_mask = cleaned_mask.copy()
+        contours, hierarchy = cv2.findContours(
+            work_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
         )
-        padded_mask[1:-1, 1:-1] = cleaned_mask
+        if hierarchy is not None:
+            for idx in range(len(contours)):
+                # hierarchy[0][idx][3] is the parent index; if >= 0, it's a hole
+                if hierarchy[0][idx][3] >= 0:
+                    cv2.drawContours(work_mask, contours, idx, 255, cv2.FILLED)
+
+        padded_mask = np.zeros(
+            (work_mask.shape[0] + 2, work_mask.shape[1] + 2), dtype=np.uint8
+        )
+        padded_mask[1:-1, 1:-1] = work_mask
         distance_map_padded = cv2.distanceTransform(
             padded_mask, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
         )

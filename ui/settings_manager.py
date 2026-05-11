@@ -150,7 +150,7 @@ DEFAULT_SETTINGS = {
     "conjoined_confidence": 0.35,
     "panel_confidence": 0.25,
     "seg_model": "yolo",  # "sam3", "sam2", or "yolo"
-    "bubble_detector_model": "yolo_1",  # "yolo_1" or "yolo_2"
+    "bubble_detector_model": "yolo_1",  # yolo_3 = comic speech bubble YOLOv8m
     "conjoined_detection": True,
     "use_osb_text_verification": True,
     "use_panel_sorting": True,

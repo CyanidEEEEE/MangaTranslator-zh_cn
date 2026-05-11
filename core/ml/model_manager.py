@@ -15,11 +15,24 @@ from transformers import (
     Sam3TrackerModel,
     Sam3TrackerProcessor,
 )
-from ultralytics import YOLO
 
 from core.device import empty_cache, get_best_device, get_best_dtype, get_device_info
 from utils.exceptions import ModelError
 from utils.logging import log_message
+
+
+CONJOINED_BUBBLE_REPO_ID = "ogkalu/comic-speech-bubble-detector-yolov8m"
+CONJOINED_BUBBLE_FILENAME = "comic-speech-bubble-detector.pt"
+
+
+def _get_ultralytics_yolo():
+    """Import Ultralytics lazily after pointing its config at a local writable dir."""
+    config_root = Path(os.environ.get("YOLO_CONFIG_DIR", "./models/.ultralytics")).resolve()
+    config_root.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(config_root))
+    from ultralytics import YOLO
+
+    return YOLO
 
 
 class ModelType(Enum):
@@ -29,6 +42,7 @@ class ModelType(Enum):
     UPSCALE_LITE = "upscale_lite"
     YOLO_SPEECH_BUBBLE = "yolo_speech_bubble"
     YOLO_SPEECH_BUBBLE_2 = "yolo_speech_bubble_2"
+    YOLO_SPEECH_BUBBLE_3 = "yolo_speech_bubble_3"
     YOLO_CONJOINED_BUBBLE = "yolo_conjoined_bubble"
     YOLO_OSBTEXT = "yolo_osbtext"
     YOLO_PANEL = "yolo_panel"
@@ -105,6 +119,9 @@ class ModelManager:
             ModelType.YOLO_SPEECH_BUBBLE_2: (
                 model_dir / "yolo" / "manga109-segmentation-bubble.pt"
             ),
+            ModelType.YOLO_SPEECH_BUBBLE_3: (
+                model_dir / "yolo" / "comic-speech-bubble-detector-yolov8m.pt"
+            ),
             ModelType.YOLO_CONJOINED_BUBBLE: (
                 model_dir / "yolo" / "comic-speech-bubble-detector-yolov8m.pt"
             ),
@@ -149,8 +166,12 @@ class ModelManager:
                 "filename": "best.pt",
             },
             ModelType.YOLO_CONJOINED_BUBBLE: {
-                "repo_id": "ogkalu/comic-speech-bubble-detector-yolov8m",
-                "filename": "comic-speech-bubble-detector.pt",
+                "repo_id": CONJOINED_BUBBLE_REPO_ID,
+                "filename": CONJOINED_BUBBLE_FILENAME,
+            },
+            ModelType.YOLO_SPEECH_BUBBLE_3: {
+                "repo_id": CONJOINED_BUBBLE_REPO_ID,
+                "filename": CONJOINED_BUBBLE_FILENAME,
             },
             ModelType.YOLO_OSBTEXT: {
                 "repo_id": "deepghs/AnimeText_yolo",
@@ -276,6 +297,26 @@ class ModelManager:
                     pass
         log_message(f"Downloaded {target.name} successfully.", verbose=verbose)
         return target
+
+    def _ensure_hf_files(
+        self,
+        repo_id: str,
+        filenames: tuple[str, ...],
+        target_dir: Path,
+        token: Optional[str] = None,
+        verbose: bool = False,
+    ) -> Path:
+        """Download selected Hugging Face files into a local directory."""
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for filename in filenames:
+            self._ensure_hf_file(
+                repo_id,
+                filename,
+                target_dir / filename,
+                token=token,
+                verbose=verbose,
+            )
+        return target_dir
 
     def _ensure_hf_repo(
         self,
@@ -446,9 +487,16 @@ class ModelManager:
         """Determine which speech bubble model type a path corresponds to."""
         if model_path is None:
             return ModelType.YOLO_SPEECH_BUBBLE
-        p = Path(model_path)
-        if p == self.model_paths[ModelType.YOLO_SPEECH_BUBBLE_2]:
+
+        try:
+            p = Path(model_path).resolve()
+        except (OSError, RuntimeError):
+            p = Path(model_path)
+
+        if p == self.model_paths[ModelType.YOLO_SPEECH_BUBBLE_2].resolve():
             return ModelType.YOLO_SPEECH_BUBBLE_2
+        if p == self.model_paths[ModelType.YOLO_SPEECH_BUBBLE_3].resolve():
+            return ModelType.YOLO_SPEECH_BUBBLE_3
         return ModelType.YOLO_SPEECH_BUBBLE
 
     def load_yolo_speech_bubble(
@@ -467,44 +515,48 @@ class ModelManager:
                 return self.models[model_type]
 
             log_message(
-                "Loading YOLO speech bubble detection model...", verbose=verbose
+                "Loading speech bubble detection model...", verbose=verbose
             )
 
             path = (
                 self.model_paths[model_type] if model_path is None else Path(model_path)
             )
+            try:
+                path_for_compare = path.resolve()
+            except (OSError, RuntimeError):
+                path_for_compare = path
 
-            if path == self.model_paths[model_type]:
+            if path_for_compare == self.model_paths[model_type].resolve():
                 hf_info = self.model_hf_repos[model_type]
+                YOLO = _get_ultralytics_yolo()
                 self._ensure_hf_file(
                     hf_info["repo_id"], hf_info["filename"], path, verbose=verbose
                 )
-
-            model = YOLO(str(path))
+                model = YOLO(str(path))
+            else:
+                YOLO = _get_ultralytics_yolo()
+                model = YOLO(str(path))
+                
             self.models[model_type] = model
-            log_message("YOLO model loaded.", verbose=verbose)
+            log_message("Speech bubble detection model loaded.", verbose=verbose)
             return model
 
     def load_yolo_conjoined_bubble(self, verbose: bool = False):
-        """Load YOLO model for conjoined speech bubble detection."""
+        """Load YOLO model for conjoined/fallback speech bubble detection."""
         with self._lock:
             if self.is_loaded(ModelType.YOLO_CONJOINED_BUBBLE):
                 return self.models[ModelType.YOLO_CONJOINED_BUBBLE]
 
             log_message(
-                "Loading YOLO conjoined bubble detection model...", verbose=verbose
+                "Loading YOLO conjoined/fallback speech bubble model...",
+                verbose=verbose,
             )
-            path = self.model_paths[ModelType.YOLO_CONJOINED_BUBBLE]
-
-            # Try HF download
-            hf_info = self.model_hf_repos[ModelType.YOLO_CONJOINED_BUBBLE]
-            self._ensure_hf_file(
-                hf_info["repo_id"], hf_info["filename"], path, verbose=verbose
+            model = self.load_yolo_speech_bubble(
+                str(self.model_paths[ModelType.YOLO_SPEECH_BUBBLE_3]),
+                verbose=verbose,
             )
-
-            model = YOLO(str(path))
             self.models[ModelType.YOLO_CONJOINED_BUBBLE] = model
-            log_message("YOLO conjoined bubble model loaded.", verbose=verbose)
+            log_message("YOLO conjoined/fallback model loaded.", verbose=verbose)
             return model
 
     def load_yolo_osbtext(self, token: Optional[str] = None, verbose: bool = False):
@@ -531,6 +583,7 @@ class ModelManager:
                 verbose=verbose,
             )
 
+            YOLO = _get_ultralytics_yolo()
             model = YOLO(str(path))
             self.models[ModelType.YOLO_OSBTEXT] = model
             log_message("YOLO OSB Text model loaded.", verbose=verbose)
@@ -557,6 +610,7 @@ class ModelManager:
                 verbose=verbose,
             )
 
+            YOLO = _get_ultralytics_yolo()
             model = YOLO(str(path))
             self.models[ModelType.YOLO_PANEL] = model
             log_message("YOLO panel model loaded.", verbose=verbose)
@@ -1138,6 +1192,8 @@ class ModelManager:
             models_unloaded.append("yolo_speech_bubble")
         if self.is_loaded(ModelType.YOLO_SPEECH_BUBBLE_2):
             models_unloaded.append("yolo_speech_bubble_2")
+        if self.is_loaded(ModelType.YOLO_SPEECH_BUBBLE_3):
+            models_unloaded.append("yolo_speech_bubble_3")
         if self.is_loaded(ModelType.YOLO_CONJOINED_BUBBLE):
             models_unloaded.append("yolo_conjoined_bubble")
         if self.is_loaded(ModelType.SAM2):
@@ -1156,6 +1212,9 @@ class ModelManager:
         self.unload_model(ModelType.YOLO_SPEECH_BUBBLE, force_gc=False, verbose=verbose)
         self.unload_model(
             ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False, verbose=verbose
+        )
+        self.unload_model(
+            ModelType.YOLO_SPEECH_BUBBLE_3, force_gc=False, verbose=verbose
         )
         self.unload_model(
             ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False, verbose=verbose

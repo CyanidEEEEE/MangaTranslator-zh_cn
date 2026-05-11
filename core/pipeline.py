@@ -37,6 +37,7 @@ from .image.image_utils import (
     save_image_with_compression,
     upscale_image,
     upscale_image_to_dimension,
+    write_image_cv2,
 )
 from .image.sorting import sort_bubbles_by_reading_order, sort_panels_by_reading_order
 from .ml.model_manager import get_model_manager
@@ -279,7 +280,7 @@ def _write_llm_crop_debug_images(
                 continue
             label = "osb" if item.get("is_outside_text", False) else "bubble"
             crop_path = crop_dir / f"{i:03d}_{label}.png"
-            cv2.imwrite(str(crop_path), img_cv)
+            write_image_cv2(crop_path, img_cv)
             count += 1
         except Exception:
             pass
@@ -726,8 +727,8 @@ def translate_and_render(
                     if not text or text.startswith("[Translation Error"):
                         continue
                         
-                    orientation = "auto"
-                    if text_prob_map is not None:
+                    orientation = bubble.get("paddle_orientation", "auto")
+                    if orientation in ("auto", "unknown", "needs_vqa") and text_prob_map is not None:
                         x1, y1, x2, y2 = [int(v) for v in bbox]
                         h_max, w_max = text_prob_map.shape[:2]
                         cx1, cx2 = max(0, x1), min(w_max, x2)
@@ -1387,6 +1388,7 @@ def extract_batch_script(input_dir, config, output_dir, cancellation_manager=Non
             model_manager.unload_model(ModelType.SAM3, force_gc=False, verbose=config.verbose)
             model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE, force_gc=False, verbose=config.verbose)
             model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False, verbose=config.verbose)
+            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE_3, force_gc=False, verbose=config.verbose)
             model_manager.unload_model(ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False, verbose=config.verbose)
             model_manager.unload_model(ModelType.YOLO_OSBTEXT, force_gc=False, verbose=config.verbose)
             model_manager.unload_model(ModelType.YOLO_PANEL, force_gc=False, verbose=config.verbose)
@@ -1730,26 +1732,6 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
             bubble_detector_model=config.detection.bubble_detector_model
         )
         panels = detect_panels(img_path, config.detection.panel_confidence, config.device) if config.detection.use_panel_sorting else None
-
-        # Free memory before Flux loads in process_outside_text
-        try:
-            from core.ml.model_manager import get_model_manager, ModelType
-            model_manager = get_model_manager()
-            model_manager.unload_model(ModelType.SAM2, force_gc=False)
-            model_manager.unload_model(ModelType.SAM3, force_gc=False)
-            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE, force_gc=False)
-            model_manager.unload_model(ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False)
-            model_manager.unload_model(ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False)
-            model_manager.unload_model(ModelType.TEXT_SEGMENTATION, force_gc=True)
-            if 'ts_model' in locals():
-                del ts_model
-            import gc
-            gc.collect()
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
 
         pil_image, outside_text_data = process_outside_text(
             pil_image, config, img_path, pil_image.format, verbose=config.verbose,

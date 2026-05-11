@@ -1050,7 +1050,17 @@ def _perform_paddle_ocr_vl(
     extracted_texts = extract_text_with_paddle_ocr_vl(pil_images, verbose=debug)
 
     formatted_texts = []
-    for i, text in enumerate(extracted_texts):
+    for i, result in enumerate(extracted_texts):
+        # extract_text_with_paddle_ocr_vl returns List[Union[str, dict]]
+        if isinstance(result, dict):
+            text = result.get("text", "")
+            orientation = result.get("orientation", "auto")
+            # Inject orientation into bubble_metadata so the pipeline can use it
+            if i < len(bubble_metadata) and isinstance(bubble_metadata[i], dict):
+                bubble_metadata[i]["paddle_orientation"] = orientation
+        else:
+            text = result
+
         if text == "[OCR FAILED]" or not text:
             formatted_texts.append(text if text else "[OCR FAILED]")
         else:

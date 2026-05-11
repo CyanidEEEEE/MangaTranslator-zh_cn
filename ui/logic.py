@@ -429,7 +429,10 @@ def process_batch_logic(
                         dest_path = temp_dir_path / rel_path
                         dest_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(img_file, dest_path)
-                        log_message(f"DEBUG-COPY: Copied {img_file.name} to {dest_path}", always_print=True)
+                        log_message(
+                            f"Copied {img_file.name} to {dest_path}",
+                            verbose=config.verbose,
+                        )
                     except Exception as copy_err:
                         log_message(
                             f"Failed to copy {img_file.name}: {copy_err}", always_print=True
@@ -450,14 +453,6 @@ def process_batch_logic(
 
         if not process_dir:
             raise LogicError("Could not determine processing directory.")
-
-        log_message(f"DEBUG: process_dir is {process_dir}", always_print=True)
-        try:
-            for item in process_dir.rglob("*"):
-                log_message(f"DEBUG-FILE in process_dir: {item}", always_print=True)
-        except Exception as e:
-            log_message(f"DEBUG-ERROR: {e}", always_print=True)
-
 
         # Determine original input name for output folder
         input_name = "batch_output"
@@ -556,15 +551,6 @@ def process_batch_logic(
             t_input_dir = task["input_dir"]
             t_output_dir = task["output_dir"]
             t_preserve = task["preserve_structure"]
-
-            # DEBUG
-            log_message(f"DEBUG: t_input_dir is {t_input_dir}", always_print=True)
-            try:
-                for item in t_input_dir.rglob("*"):
-                    log_message(f"DEBUG-FILE: {item}", always_print=True)
-            except Exception as e:
-                log_message(f"DEBUG-ERROR: {e}", always_print=True)
-            # END DEBUG
 
             _batch_progress_callback(task_idx / max(1, len(tasks)), desc=f"Processing {t_input_dir.name}...")
 

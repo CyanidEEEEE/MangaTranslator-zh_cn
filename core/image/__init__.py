@@ -17,10 +17,12 @@ from .image_utils import (
     cv2_to_pil,
     pil_to_cv2,
     process_bubble_image_cached,
+    read_image_cv2,
     resize_to_max_side,
     save_image_with_compression,
     upscale_image,
     upscale_image_to_dimension,
+    write_image_cv2,
 )
 from .inpainting import FluxKontextInpainter
 from .ocr_detection import OutsideTextDetector
@@ -33,10 +35,12 @@ __all__ = [
     "cv2_to_pil",
     "pil_to_cv2",
     "process_bubble_image_cached",
+    "read_image_cv2",
     "resize_to_max_side",
     "save_image_with_compression",
     "upscale_image",
     "upscale_image_to_dimension",
+    "write_image_cv2",
     "FluxKontextInpainter",
     "OutsideTextDetector",
 ]

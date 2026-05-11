@@ -8,6 +8,7 @@ from PIL import Image
 
 from core.caching import get_cache
 from core.device import get_best_device
+from core.image.image_utils import read_image_cv2
 from core.ml.model_manager import ModelType, get_model_manager
 from utils.exceptions import ImageProcessingError
 from utils.logging import log_message
@@ -195,7 +196,7 @@ class OutsideTextDetector:
                 )
                 image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
             else:
-                image_cv = cv2.imread(str(image_path))
+                image_cv = read_image_cv2(image_path)
                 if image_cv is None:
                     raise ImageProcessingError(f"Could not read image at {image_path}")
                 image_pil = Image.fromarray(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
@@ -261,13 +262,20 @@ class OutsideTextDetector:
                 yolo_results, yolo_boxes = cached_sb
             else:
                 yolo_model = self.manager.load_yolo_speech_bubble(yolo_model_path)
+                
+                kwargs = {
+                    "conf": confidence,
+                    "device": self.device,
+                    "verbose": False,
+                    "imgsz": 1600 if bubble_detector_model == "yolo_2" else 640,
+                    "retina_masks": True,
+                }
+                if bubble_detector_model == "yolo_3":
+                    kwargs["classes"] = [0]
+                    
                 yolo_results = yolo_model(
                     image_cv,
-                    conf=confidence,
-                    device=self.device,
-                    verbose=False,
-                    imgsz=1600 if bubble_detector_model == "yolo_2" else 640,
-                    retina_masks=True,
+                    **kwargs
                 )[0]
                 yolo_boxes = (
                     yolo_results.boxes.xyxy
@@ -282,7 +290,8 @@ class OutsideTextDetector:
             )
 
             log_message(
-                "Running Secondary YOLO to catch missed bubbles...", verbose=verbose
+                "Running secondary detector to catch missed bubbles...",
+                verbose=verbose,
             )
             try:
                 sec_model = self.manager.load_yolo_conjoined_bubble()
@@ -339,9 +348,9 @@ class OutsideTextDetector:
                         else:
                             yolo_boxes = boxes_to_add_tensor
             except Exception as e:
-                log_message(f"Secondary YOLO failed: {e}", verbose=verbose)
+                log_message(f"Secondary detector failed: {e}", verbose=verbose)
 
-        log_message("Running YOLO OSB Text...", always_print=True)
+        log_message("Running OSB text detector...", always_print=True)
 
         osbtext_boxes = None
         osbtext_confs = None
@@ -820,6 +829,92 @@ def _get_paddle_ocr_vl_size(processor, max_pixels: int) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Spotting-based orientation helpers
+# ---------------------------------------------------------------------------
+_SPOTTING_UPSCALE_THRESHOLD = 1500  # PaddleOCR-VL docs: 2× upscale below this
+
+
+def _analyze_spotting_orientation(raw_text: str) -> str:
+    """Determine text orientation from PaddleOCR-VL Spotting output.
+
+    Uses dual-layer analysis:
+      Layer 1 — **Line-level**: aspect ratio of each detected text-line box.
+      Layer 2 — **Layout-level**: spatial variance of line-center coordinates.
+
+    Returns one of ``"vertical"``, ``"horizontal"``, or ``"needs_vqa"``.
+    """
+    import re
+
+    pattern = r'(.*?)((?:<\|LOC_\d+\|>\s*){8})'
+    matches = re.findall(pattern, raw_text, re.DOTALL)
+    if not matches:
+        return "needs_vqa"
+
+    lines_info: list[str] = []
+    centers_x: list[float] = []
+    centers_y: list[float] = []
+
+    for m in matches:
+        coords = [int(x) for x in re.findall(r'\d+', m[1])]
+        if len(coords) != 8:
+            continue
+        x1, y1, x2, y2, x3, y3, x4, y4 = coords
+        min_x, max_x = min(x1, x2, x3, x4), max(x1, x2, x3, x4)
+        min_y, max_y = min(y1, y2, y3, y4), max(y1, y2, y3, y4)
+        box_w = max(max_x - min_x, 1)
+        box_h = max(max_y - min_y, 1)
+
+        centers_x.append((min_x + max_x) / 2.0)
+        centers_y.append((min_y + max_y) / 2.0)
+
+        ratio = box_h / box_w
+        if ratio > 1.5:
+            lines_info.append("vertical")
+        elif ratio < 0.67:
+            lines_info.append("horizontal")
+        else:
+            lines_info.append("ambiguous")
+
+    if not lines_info:
+        return "needs_vqa"
+
+    # --- Layer 1: line-level vote ---
+    vert_count = lines_info.count("vertical")
+    horiz_count = lines_info.count("horizontal")
+    total = len(lines_info)
+    line_signal = "ambiguous"
+    if vert_count > horiz_count and vert_count >= max(1, total * 0.4):
+        line_signal = "vertical"
+    elif horiz_count > vert_count and horiz_count >= max(1, total * 0.4):
+        line_signal = "horizontal"
+
+    # --- Layer 2: layout-level (center-point distribution) ---
+    layout_signal = "ambiguous"
+    if len(centers_x) >= 2:
+        var_x = float(np.var(centers_x))
+        var_y = float(np.var(centers_y))
+        if var_x + var_y > 0:
+            if var_y > var_x * 1.5:
+                # Centers spread vertically → stacked rows → horizontal text
+                layout_signal = "horizontal"
+            elif var_x > var_y * 1.5:
+                # Centers spread horizontally → side-by-side columns → vertical
+                layout_signal = "vertical"
+
+    # --- Combine ---
+    if line_signal == layout_signal and line_signal != "ambiguous":
+        return line_signal
+    if line_signal != "ambiguous" and layout_signal == "ambiguous":
+        return line_signal
+    if layout_signal != "ambiguous" and line_signal == "ambiguous":
+        return layout_signal
+    if line_signal != "ambiguous" and layout_signal != "ambiguous":
+        # Contradictory: trust layout for multi-line, line for few-line
+        return layout_signal if len(centers_x) >= 3 else line_signal
+    return "needs_vqa"
+
+
 def extract_text_with_paddle_ocr_vl(
     images: List[Image.Image], verbose: bool = False
 ) -> List[Union[str, dict]]:
@@ -871,12 +966,17 @@ def extract_text_with_paddle_ocr_vl(
                     ]
                 )
                 
+                # Upscale small images for spotting per PaddleOCR-VL official docs
+                spot_img = img
+                w, h = img.size
+                if w < _SPOTTING_UPSCALE_THRESHOLD and h < _SPOTTING_UPSCALE_THRESHOLD:
+                    spot_img = img.resize((w * 2, h * 2), Image.LANCZOS)
                 messages_batch_spotting.append(
                     [
                         {
                             "role": "user",
                             "content": [
-                                {"type": "image", "image": img},
+                                {"type": "image", "image": spot_img},
                                 {"type": "text", "text": "Spotting:"},
                             ],
                         }
@@ -933,6 +1033,7 @@ def extract_text_with_paddle_ocr_vl(
             # Pass 2: Spotting
             orientations = ["auto"] * len(valid_indices)
             try:
+                spotting_max_pixels = 2048 * 28 * 28
                 inputs_spot = processor.apply_chat_template(
                     messages_batch_spotting,
                     add_generation_prompt=True,
@@ -940,6 +1041,7 @@ def extract_text_with_paddle_ocr_vl(
                     return_dict=True,
                     return_tensors="pt",
                     padding=True,
+                    images_kwargs={"size": _get_paddle_ocr_vl_size(processor, spotting_max_pixels)},
                 ).to(model.device)
 
                 with torch.no_grad():
@@ -955,42 +1057,7 @@ def extract_text_with_paddle_ocr_vl(
 
                 for j, out_tokens in enumerate(outputs_spot):
                     raw_text = processor.decode(out_tokens[inputs_spot["input_ids"].shape[-1] :], skip_special_tokens=False)
-                    pattern = r'(.*?)((?:<\|LOC_\d+\|>\s*){8})'
-                    matches = re.findall(pattern, raw_text, re.DOTALL)
-                    
-                    if matches:
-                        lines_info = []
-                        for m in matches:
-                            coords = [int(x) for x in re.findall(r'\d+', m[1])]
-                            if len(coords) == 8:
-                                x1, y1, x2, y2, x3, y3, x4, y4 = coords
-                                box_w = max(x1, x2, x3, x4) - min(x1, x2, x3, x4)
-                                box_h = max(y1, y2, y3, y4) - min(y1, y2, y3, y4)
-                                
-                                box_w = max(box_w, 1) # Prevent division by zero
-                                ratio = box_h / box_w
-                                
-                                if ratio > 1.25:
-                                    lines_info.append("vertical")
-                                elif ratio < 0.80:
-                                    lines_info.append("horizontal")
-                                else:
-                                    lines_info.append("ambiguous")
-                            
-                        if lines_info:
-                            vert_count = lines_info.count("vertical")
-                            horiz_count = lines_info.count("horizontal")
-                            
-                            if vert_count > horiz_count:
-                                orientations[j] = "vertical"
-                            elif horiz_count > vert_count:
-                                orientations[j] = "horizontal"
-                            else:
-                                orientations[j] = "needs_vqa"
-                        else:
-                            orientations[j] = "needs_vqa"
-                    else:
-                        orientations[j] = "needs_vqa"
+                    orientations[j] = _analyze_spotting_orientation(raw_text)
                     
                 del inputs_spot, outputs_spot
                 import gc
@@ -1013,7 +1080,7 @@ def extract_text_with_paddle_ocr_vl(
                             "role": "user",
                             "content": [
                                 {"type": "image", "image": batch_imgs[j]},
-                                {"type": "text", "text": "Is the text layout in this image horizontal or vertical? Answer with exactly 'horizontal' or 'vertical'."},
+                                {"type": "text", "text": "OCR this image. Is the text written in horizontal rows (left-to-right) or vertical columns (top-to-bottom)? Reply: horizontal or vertical"},
                             ],
                         }
                     ])

@@ -391,6 +391,39 @@ def process_outside_text(
             inpainting_method = "none"
             log_message("Skipping inpainting (extraction mode).", verbose=verbose)
 
+        if inpainting_method.startswith("flux_"):
+            try:
+                from core.ml.model_manager import ModelType
+
+                model_manager = get_model_manager()
+                model_manager.unload_model(
+                    ModelType.SAM2, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.SAM3, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.YOLO_SPEECH_BUBBLE, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.YOLO_SPEECH_BUBBLE_2, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.YOLO_SPEECH_BUBBLE_3, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.YOLO_CONJOINED_BUBBLE, force_gc=False, verbose=verbose
+                )
+                model_manager.unload_model(
+                    ModelType.TEXT_SEGMENTATION, force_gc=True, verbose=verbose
+                )
+                gc.collect()
+            except Exception as e:
+                log_message(
+                    f"Warning: failed to free detector models before Flux: {e}",
+                    verbose=verbose,
+                )
+
         inpainter = None
 
         if inpainting_method == "flux_klein_9b":

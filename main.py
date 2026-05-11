@@ -203,9 +203,12 @@ def main():
         "--bubble-detector-model",
         dest="bubble_detector_model",
         type=str,
-        choices=["yolo_1", "yolo_2"],
+        choices=["yolo_1", "yolo_2", "yolo_3"],
         default="yolo_1",
-        help="Primary bubble detector model",
+        help=(
+            "Primary bubble detector model. yolo_3 uses "
+            "ogkalu/comic-speech-bubble-detector-yolov8m."
+        ),
     )
     parser.add_argument(
         "--reading-direction",
