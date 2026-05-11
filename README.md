@@ -4,7 +4,7 @@
 链接：https://pan.quark.cn/s/196cabd87c10
 提取码：6gaY
 
-推荐使用自动项目+Gemini或Gpt处理封面图；部分图片气泡错误可以在yolo_1、yolo_2和yolo_3之间切换解决，想要手动修图建议使用Koharu项目
+推荐使用自动项目+Gemini或Gpt处理封面图；部分图片气泡错误可以在yolo_1、yolo_2和yolo_3之间切换解决，大目录模式只要将源目录中不需要重修的图片直接去掉改配置再次运行即可。想要手动修图建议使用Koharu项目
 
 
 
