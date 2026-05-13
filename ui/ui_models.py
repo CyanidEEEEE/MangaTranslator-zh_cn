@@ -203,6 +203,10 @@ class UIConfigState:
     batch_font_pack: Optional[str] = None
     batch_special_instructions: Optional[str] = None
     batch_parallel_requests: int = 1
+    batch_bubble_detector_model: str = "yolo_1"
+    batch_padding_pixels: float = 5.0
+    batch_outside_text_enabled: bool = False
+    batch_outside_text_osb_font_pack: str = ""
 
     def to_save_dict(self) -> Dict[str, Any]:
         """Converts the UI state into a dictionary suitable for saving to config.json."""
@@ -314,6 +318,10 @@ class UIConfigState:
             "batch_font_pack": self.batch_font_pack,
             "batch_special_instructions": self.batch_special_instructions or "",
             "batch_parallel_requests": self.batch_parallel_requests,
+            "batch_bubble_detector_model": self.batch_bubble_detector_model,
+            "batch_padding_pixels": self.batch_padding_pixels,
+            "batch_outside_text_enabled": self.batch_outside_text_enabled,
+            "batch_outside_text_osb_font_pack": self.batch_outside_text_osb_font_pack,
         }
         return data
 
@@ -591,6 +599,31 @@ class UIConfigState:
             batch_font_pack=data.get("batch_font_pack"),
             batch_special_instructions=data.get("batch_special_instructions") or None,
             batch_parallel_requests=int(data.get("batch_parallel_requests", 1)),
+            batch_bubble_detector_model=data.get(
+                "batch_bubble_detector_model",
+                data.get(
+                    "bubble_detector_model",
+                    defaults.get("bubble_detector_model", "yolo_1"),
+                ),
+            ),
+            batch_padding_pixels=data.get(
+                "batch_padding_pixels",
+                data.get("padding_pixels", defaults.get("padding_pixels", 5.0)),
+            ),
+            batch_outside_text_enabled=data.get(
+                "batch_outside_text_enabled",
+                data.get(
+                    "outside_text_enabled",
+                    defaults.get("outside_text_enabled", False),
+                ),
+            ),
+            batch_outside_text_osb_font_pack=data.get(
+                "batch_outside_text_osb_font_pack",
+                data.get(
+                    "outside_text_osb_font_pack",
+                    defaults.get("outside_text_osb_font_pack", ""),
+                ),
+            ),
         )
 
 
@@ -704,7 +737,7 @@ def map_ui_to_backend_config(
     osb_font_pack = (
         ui_state.outside_text.osb_font_dir
         if ui_state.outside_text.osb_font_dir
-        else ui_state.font_pack
+        else font_pack_name
     )
     osb_font_path = fonts_base_dir / osb_font_pack if osb_font_pack else None
 

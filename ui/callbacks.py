@@ -173,16 +173,34 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         batch_input_language,
         batch_output_language,
         batch_font_dropdown,
+        batch_outside_text_osb_font_pack_val,
         special_instructions_val,
         batch_special_instructions_val,
         batch_parallel_requests_val,
+        batch_bubble_detector_model_val,
+        batch_padding_pixels_val,
+        batch_outside_text_enabled_val,
     ) = args
 
     final_input_language = batch_input_language if is_batch else input_language
     final_output_language = batch_output_language if is_batch else output_language
     final_font_pack = batch_font_dropdown if is_batch else font_dropdown
+    final_osb_font_pack = (
+        batch_outside_text_osb_font_pack_val
+        if is_batch
+        else outside_text_osb_font_pack_val
+    )
     final_special_instructions = (
         batch_special_instructions_val if is_batch else special_instructions_val
+    )
+    final_bubble_detector_model = (
+        batch_bubble_detector_model_val if is_batch else bubble_detector_model_val
+    )
+    final_padding_pixels = (
+        batch_padding_pixels_val if is_batch else padding_pixels_val
+    )
+    final_outside_text_enabled = (
+        batch_outside_text_enabled_val if is_batch else outside_text_enabled_val
     )
 
     return UIConfigState(
@@ -191,7 +209,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             conjoined_confidence=conjoined_confidence,
             panel_confidence=panel_confidence,
             seg_model=seg_model_val,
-            bubble_detector_model=bubble_detector_model_val,
+            bubble_detector_model=final_bubble_detector_model,
             conjoined_detection=conjoined_detection_checkbox_val,
             use_osb_text_verification=osb_text_verification_checkbox_val,
             use_panel_sorting=use_panel_sorting_checkbox_val,
@@ -203,7 +221,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             inpaint_colored_bubbles=inpaint_colored_bubbles,
         ),
         outside_text=UIOutsideTextSettings(
-            enabled=outside_text_enabled_val,
+            enabled=final_outside_text_enabled,
             seed=int(outside_text_seed_val),
             huggingface_token=outside_text_huggingface_token_val,
             inpainting_method=outside_text_inpainting_method_val,
@@ -222,7 +240,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             page_filter_min_area_ratio=float(
                 outside_text_page_filter_min_area_ratio_val
             ),
-            osb_font_dir=outside_text_osb_font_pack_val,
+            osb_font_dir=final_osb_font_pack,
             osb_max_font_size=int(outside_text_osb_max_font_size_val),
             osb_min_font_size=int(outside_text_osb_min_font_size_val),
             osb_use_ligatures=outside_text_osb_use_ligatures_val,
@@ -288,7 +306,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             hyphen_penalty=hyphen_penalty_val,
             hyphenation_min_word_length=hyphenation_min_word_length_val,
             badness_exponent=badness_exponent_val,
-            padding_pixels=padding_pixels_val,
+            padding_pixels=final_padding_pixels,
             supersampling_factor=int(supersampling_factor_val),
         ),
         output=UIOutputSettings(
@@ -321,7 +339,11 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         batch_input_language=batch_input_language,
         batch_output_language=batch_output_language,
         batch_font_pack=batch_font_dropdown,
+        batch_outside_text_osb_font_pack=batch_outside_text_osb_font_pack_val,
         batch_parallel_requests=int(batch_parallel_requests_val),
+        batch_bubble_detector_model=batch_bubble_detector_model_val,
+        batch_padding_pixels=float(batch_padding_pixels_val),
+        batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
     )
 
 
@@ -962,6 +984,7 @@ def handle_save_config_click(*args: Any) -> str:
         b_in_lang,
         b_out_lang,
         b_font,
+        batch_outside_text_osb_font_pack_val,
         enable_web_search_val,
         enable_code_execution_val,
         image_detail_val,
@@ -1017,6 +1040,9 @@ def handle_save_config_click(*args: Any) -> str:
         image_upscale_factor_val,
         image_upscale_model_val,
         auto_scale_val,
+        batch_bubble_detector_model_val,
+        batch_padding_pixels_val,
+        batch_outside_text_enabled_val,
     ) = args
     ui_state = UIConfigState(
         detection=UIDetectionSettings(
@@ -1154,7 +1180,11 @@ def handle_save_config_click(*args: Any) -> str:
         batch_input_language=b_in_lang,
         batch_output_language=b_out_lang,
         batch_font_pack=b_font,
+        batch_outside_text_osb_font_pack=batch_outside_text_osb_font_pack_val,
         batch_special_instructions=batch_special_instructions_val,
+        batch_bubble_detector_model=batch_bubble_detector_model_val,
+        batch_padding_pixels=float(batch_padding_pixels_val),
+        batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
     )
 
     # Convert UI state to dictionary for saving
@@ -1335,6 +1365,7 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.batch_input_language,
         default_ui_state.batch_output_language,
         gr.update(value=default_ui_state.batch_font_pack),
+        gr.update(value=default_ui_state.batch_outside_text_osb_font_pack),
         gr.update(
             value=default_ui_state.general.enable_web_search,
             visible=enable_web_search_visible,
@@ -1419,6 +1450,9 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         ),
         default_ui_state.general.auto_scale,
         default_ui_state.batch_parallel_requests,
+        gr.update(value=default_ui_state.batch_bubble_detector_model),
+        gr.update(value=default_ui_state.batch_padding_pixels),
+        gr.update(value=default_ui_state.batch_outside_text_enabled),
     ]
 
 

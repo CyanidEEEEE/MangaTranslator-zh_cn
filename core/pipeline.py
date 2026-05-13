@@ -1564,6 +1564,52 @@ def extract_batch_script(input_dir, config, output_dir, cancellation_manager=Non
             
     log_message(f"Extraction complete! Script saved.", always_print=True)
 
+
+MANUAL_RENDER_OVERRIDE_PATTERN = re.compile(r"\s*\[([^\[\]]*)\]\s*$")
+
+
+def parse_manual_render_overrides(text):
+    """Extract optional trailing [font:...,size:...,direction:...] overrides."""
+    match = MANUAL_RENDER_OVERRIDE_PATTERN.search(text)
+    if not match:
+        return text, {}
+
+    raw_options = match.group(1).strip()
+    if not re.search(r"(^|[,，])\s*(font|size|direction)\s*[:：]", raw_options, re.I):
+        return text, {}
+
+    overrides = {}
+    for part in re.split(r"[,，]", raw_options):
+        if not re.search(r"[:：]", part):
+            continue
+        key, value = re.split(r"[:：]", part, maxsplit=1)
+        key = key.strip().lower()
+        value = value.strip()
+        if not value:
+            continue
+
+        if key == "font":
+            font_name = Path(value).name
+            if font_name == value and font_name not in {"", ".", ".."}:
+                overrides["font"] = font_name
+        elif key == "size":
+            try:
+                size = int(round(float(value)))
+            except ValueError:
+                continue
+            if 1 <= size <= 1000:
+                overrides["size"] = size
+        elif key == "direction":
+            direction = value.lower()
+            if direction in {"horizontal", "vertical"}:
+                overrides["direction"] = direction
+
+    if not overrides:
+        return text, {}
+
+    return text[: match.start()].rstrip(), overrides
+
+
 def parse_translated_txt(txt_path, json_path):
     import re
     import json
@@ -1590,6 +1636,7 @@ def parse_translated_txt(txt_path, json_path):
             if text_match:
                 item_id = int(text_match.group(1))
                 trans_text = text_match.group(2).strip()
+                trans_text, render_overrides = parse_manual_render_overrides(trans_text)
                 
                 # 核心修复：智能切除 LLM 可能会返回的 [OSB] 或 [Bubble] 标签，防止污染嵌字
                 trans_text = re.sub(r'^\[.*?\]\s*', '', trans_text).strip()
@@ -1597,6 +1644,16 @@ def parse_translated_txt(txt_path, json_path):
                 for item in global_script["pages"][current_page]:
                     if item["id"] == item_id:
                         item["translated_text"] = trans_text
+                        item.pop("font_override", None)
+                        item.pop("font_size_override", None)
+                        item.pop("direction_override", None)
+                        if "font" in render_overrides:
+                            item["font_override"] = render_overrides["font"]
+                        if "size" in render_overrides:
+                            item["font_size_override"] = render_overrides["size"]
+                        if "direction" in render_overrides:
+                            item["direction_override"] = render_overrides["direction"]
+                            item["orientation"] = render_overrides["direction"]
                         break
 
     with open(json_path, "w", encoding="utf-8") as f:
@@ -1665,6 +1722,22 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
     from core.text.font_manager import find_font_variants
     from utils.logging import log_message
     from utils.exceptions import CancellationError
+
+    def _resolve_manual_font_dir(font_name, default_font_dir):
+        font_name = str(font_name or "").strip()
+        if not font_name or Path(font_name).name != font_name:
+            return None
+
+        default_path = Path(default_font_dir)
+        candidates = []
+        if default_path.name == font_name and default_path.is_dir():
+            candidates.append(default_path)
+        candidates.extend([default_path.parent / font_name, default_path / font_name])
+
+        for candidate in candidates:
+            if candidate.is_dir():
+                return str(candidate)
+        return None
 
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -1742,9 +1815,17 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
         
         json_translations = {item["id"]: item["translated_text"] for item in items}
         json_orientations = {item["id"]: item.get("orientation", "auto") for item in items}
+        json_font_overrides = {item["id"]: item.get("font_override") for item in items}
+        json_font_size_overrides = {item["id"]: item.get("font_size_override") for item in items}
+        json_direction_overrides = {item["id"]: item.get("direction_override") for item in items}
         for i, bubble in enumerate(sorted_items):
             bubble["translation"] = json_translations.get(i + 1, "")
             bubble["orientation"] = json_orientations.get(i + 1, "auto")
+            bubble["font_override"] = json_font_overrides.get(i + 1)
+            bubble["font_size_override"] = json_font_size_overrides.get(i + 1)
+            bubble["direction_override"] = json_direction_overrides.get(i + 1)
+            if bubble["direction_override"] in {"horizontal", "vertical"}:
+                bubble["orientation"] = bubble["direction_override"]
             
         cleaned_image_cv, processed_bubbles_info = clean_speech_bubbles(
             pil_image, config.yolo_model_path, config.detection.confidence,
@@ -1861,6 +1942,27 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
                 if stroke_color_bgr_val:
                     stroke_color_rgb = (stroke_color_bgr_val[2], stroke_color_bgr_val[1], stroke_color_bgr_val[0])
                 
+            font_override = bubble.get("font_override")
+            if font_override:
+                override_font_dir = _resolve_manual_font_dir(font_override, config.rendering.font_dir)
+                if override_font_dir:
+                    font_dir = override_font_dir
+                else:
+                    log_message(
+                        f"Manual font override '{font_override}' was not found; using {Path(font_dir).name}",
+                        always_print=True,
+                    )
+
+            size_override = bubble.get("font_size_override")
+            if size_override is not None:
+                try:
+                    fixed_size = int(size_override)
+                    if fixed_size > 0:
+                        min_font = fixed_size
+                        max_font = fixed_size
+                except (TypeError, ValueError):
+                    pass
+
             if config.rendering.pure_black_text:
                 text_color_rgb = (0, 0, 0)
                 outline_w = 0.0

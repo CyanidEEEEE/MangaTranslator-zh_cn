@@ -248,24 +248,42 @@ def refresh_models_and_fonts(fonts_base_dir: Path):
         current_osb_font = saved_settings.get("outside_text_osb_font_pack")
         selected_osb_font_val = (
             current_osb_font
-            if current_osb_font in font_packs
-            else (font_packs[0] if font_packs else None)
+            if current_osb_font in ([""] + font_packs)
+            else ""
         )
         osb_font_result = gr.update(
             choices=[""] + font_packs, value=selected_osb_font_val
+        )
+
+        current_batch_osb_font = saved_settings.get(
+            "batch_outside_text_osb_font_pack", current_osb_font
+        )
+        selected_batch_osb_font_val = (
+            current_batch_osb_font
+            if current_batch_osb_font in ([""] + font_packs)
+            else ""
+        )
+        batch_osb_font_result = gr.update(
+            choices=[""] + font_packs, value=selected_batch_osb_font_val
         )
 
         font_count = len(font_packs)
         font_text = "1 font pack" if font_count == 1 else f"{font_count} font packs"
         gr.Info(f"YOLO model auto-detected. Found {font_text}")
 
-        return single_font_result, batch_font_result, osb_font_result
+        return (
+            single_font_result,
+            batch_font_result,
+            osb_font_result,
+            batch_osb_font_result,
+        )
     except Exception as e:
         gr.Error(f"Error refreshing resources: {str(e)}")
         font_packs, _ = get_available_font_packs(fonts_base_dir)
         return (
             gr.update(choices=font_packs),
             gr.update(choices=font_packs),
+            gr.update(choices=[""] + font_packs),
             gr.update(choices=[""] + font_packs),
         )
 

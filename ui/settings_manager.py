@@ -239,6 +239,11 @@ DEFAULT_BATCH_SETTINGS = {
     "batch_output_language": "English",
     "batch_font_pack": None,
     "batch_special_instructions": "",
+    "batch_parallel_requests": 1,
+    "batch_bubble_detector_model": "yolo_1",
+    "batch_padding_pixels": 5.0,
+    "batch_outside_text_enabled": False,
+    "batch_outside_text_osb_font_pack": "",
 }
 
 
@@ -355,6 +360,11 @@ CANONICAL_CONFIG_KEY_ORDER: List[str] = [
     "batch_input_language",
     "batch_output_language",
     "batch_font_pack",
+    "batch_parallel_requests",
+    "batch_bubble_detector_model",
+    "batch_padding_pixels",
+    "batch_outside_text_enabled",
+    "batch_outside_text_osb_font_pack",
 ]
 
 
@@ -622,6 +632,10 @@ def reset_to_defaults() -> Dict[str, Any]:
         if "outside_text_osb_font_pack" in current_saved:
             settings["outside_text_osb_font_pack"] = current_saved[
                 "outside_text_osb_font_pack"
+            ]
+        if "batch_outside_text_osb_font_pack" in current_saved:
+            settings["batch_outside_text_osb_font_pack"] = current_saved[
+                "batch_outside_text_osb_font_pack"
             ]
 
         # Preserve provider and model selection if they exist

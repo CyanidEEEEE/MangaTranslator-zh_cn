@@ -1,4 +1,4 @@
-import functools
+﻿import functools
 from pathlib import Path
 from typing import Any
 
@@ -229,6 +229,24 @@ def create_layout(
         saved_osb_font_pack = saved_settings.get("outside_text_osb_font_pack", "")
         if saved_osb_font_pack not in ([""] + font_choices):
             saved_osb_font_pack = ""
+        saved_batch_osb_font_pack = saved_settings.get(
+            "batch_outside_text_osb_font_pack",
+            saved_osb_font_pack,
+        )
+        if saved_batch_osb_font_pack not in ([""] + font_choices):
+            saved_batch_osb_font_pack = ""
+        batch_default_bubble_detector_model = saved_settings.get(
+            "batch_bubble_detector_model",
+            saved_settings.get("bubble_detector_model", "yolo_1"),
+        )
+        batch_default_padding_pixels = saved_settings.get(
+            "batch_padding_pixels",
+            saved_settings.get("padding_pixels", 5.0),
+        )
+        batch_default_outside_text_enabled = saved_settings.get(
+            "batch_outside_text_enabled",
+            saved_settings.get("outside_text_enabled", False),
+        )
 
         initial_provider = saved_settings.get(
             "provider", settings_manager.DEFAULT_SETTINGS["provider"]
@@ -277,6 +295,33 @@ def create_layout(
                             value=default_font,
                             filterable=False,
                         )
+                        outside_text_osb_font_pack = gr.Dropdown(
+                            value=saved_osb_font_pack,
+                            choices=[""] + font_choices,
+                            label="框外字字体",
+                            info="画外音/拟声词默认字体；留空则使用文本字体。",
+                            filterable=False,
+                        )
+                        with gr.Accordion("生成参数", open=True):
+                            bubble_detector_model = gr.Radio(
+                                choices=["yolo_1", "yolo_2", "yolo_3"],
+                                value=lambda k="bubble_detector_model", d="yolo_1": settings_manager.get_saved_settings().get(k, d),
+                                label="气泡检测模型",
+                                info="选择本次生成使用的主气泡检测模型。",
+                            )
+                            padding_pixels = gr.Slider(
+                                0,
+                                50,
+                                value=lambda k="padding_pixels", d=5.0: settings_manager.get_saved_settings().get(k, d),
+                                step=1,
+                                label="预留空白像素 (Padding Pixels)",
+                                info="文字距离气泡边缘的安全预留像素值。",
+                            )
+                            outside_text_enabled = gr.Checkbox(
+                                value=lambda k="outside_text_enabled", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="启用画外音检测 (OSB Detection)",
+                                info="检测、清理并翻译气泡外文字、拟声词或旁白。",
+                            )
                         with gr.Accordion("翻译设定", open=True):
                             # Hidden state to store original language selection
                             original_language_state = gr.State(
@@ -342,6 +387,33 @@ def create_layout(
                             value=batch_default_font,
                             filterable=False,
                         )
+                        batch_outside_text_osb_font_pack = gr.Dropdown(
+                            value=saved_batch_osb_font_pack,
+                            choices=[""] + font_choices,
+                            label="框外字字体",
+                            info="批量画外音/拟声词默认字体；留空则使用文本字体。",
+                            filterable=False,
+                        )
+                        with gr.Accordion("生成参数", open=True):
+                            batch_bubble_detector_model = gr.Radio(
+                                choices=["yolo_1", "yolo_2", "yolo_3"],
+                                value=batch_default_bubble_detector_model,
+                                label="气泡检测模型",
+                                info="选择本次批量生成使用的主气泡检测模型。",
+                            )
+                            batch_padding_pixels = gr.Slider(
+                                0,
+                                50,
+                                value=batch_default_padding_pixels,
+                                step=1,
+                                label="预留空白像素 (Padding Pixels)",
+                                info="文字距离气泡边缘的安全预留像素值。",
+                            )
+                            batch_outside_text_enabled = gr.Checkbox(
+                                value=batch_default_outside_text_enabled,
+                                label="启用画外音检测 (OSB Detection)",
+                                info="检测、清理并翻译气泡外文字、拟声词或旁白。",
+                            )
                         with gr.Accordion("翻译设定", open=True):
                             # Hidden state to store original language selection
                             batch_original_language_state = gr.State(
@@ -518,8 +590,9 @@ def create_layout(
                             visible=True, elem_classes="settings-group"
                         ) as group_detection:
                             gr.Markdown("### 对话框检测 (Speech Bubble Detection)")
-                            bubble_detector_model = gr.Radio(
+                            settings_bubble_detector_model = gr.Radio(
                                 choices=["yolo_1", "yolo_2", "yolo_3"],
+                                visible=False,
                                 value=lambda k="bubble_detector_model", d="yolo_1": settings_manager.get_saved_settings().get(k, d),
                                 label="对话框检测模型",
                                 info=(
@@ -1191,7 +1264,7 @@ def create_layout(
                                 label="不良度指数 (Badness Exponent)",
                                 info="控制排版对齐松紧的惩罚指数。增加可避免行间隙过于松散。",
                             )
-                            padding_pixels = gr.Slider(0, 50, value=lambda k="padding_pixels", d=5.0: settings_manager.get_saved_settings().get(k, d), step=1, label="预留空白像素 (Padding Pixels)", info="文字距离气泡边缘的安全预留像素值。增加此值可让文字更往中心聚拢。")
+                            settings_padding_pixels = gr.Slider(0, 50, value=lambda k="padding_pixels", d=5.0: settings_manager.get_saved_settings().get(k, d), step=1, visible=False, label="预留空白像素 (Padding Pixels)", info="文字距离气泡边缘的安全预留像素值。增加此值可让文字更往中心聚拢。")
                             supersampling_factor = gr.Slider(
                                 1,
                                 16,
@@ -1213,17 +1286,16 @@ def create_layout(
                                 type="password",
                                 info="下载检测模型 (如 SAM 3, Flux Kontext 等) 所需。也可通过系统环境变量配置。",
                             )
-                            outside_text_enabled = gr.Checkbox(
+                            settings_outside_text_enabled = gr.Checkbox(
                                 value=lambda k="outside_text_enabled", d=False: settings_manager.get_saved_settings().get(k, d),
+                                visible=False,
                                 label="启用画外音检测 (OSB Detection)",
                                 info="检测、涂白并翻译气泡外/无边框的文字（画外音、拟声词等）。",
                             )
 
                             # Wrap all settings except the enable checkbox and token in a Column with visibility control
                             with gr.Column(
-                                visible=saved_settings.get(
-                                    "outside_text_enabled", False
-                                )
+                                visible=True
                             ) as outside_text_settings_wrapper:
                                 gr.Markdown("### Detection")
                                 outside_text_osb_confidence = gr.Slider(
@@ -1421,11 +1493,12 @@ def create_layout(
                                     label="微小形状面积比阈值",
                                     info="当检测框占全图的面积比例低于此值时，会被判定为微小形状并应用上述放大倍数。",
                                 )
-                                outside_text_osb_font_pack = gr.Dropdown(
+                                settings_outside_text_osb_font_pack = gr.Dropdown(
                                     value=saved_osb_font_pack,
                                     choices=[""] + font_choices,
                                     label="文本字体",
                                     info="画外音/拟声词专用翻译字体（留空则默认使用主字体）。",
+                                    visible=False,
                                 )
                                 outside_text_osb_max_font_size = gr.State(1000)
                                 outside_text_osb_min_font_size = gr.State(4)
@@ -1642,6 +1715,7 @@ def create_layout(
             batch_input_language,
             batch_output_language,
             batch_font_dropdown,
+            batch_outside_text_osb_font_pack,
             enable_web_search_checkbox,
             enable_code_execution_checkbox,
             image_detail_dropdown,
@@ -1697,6 +1771,9 @@ def create_layout(
             image_upscale_factor,
             image_upscale_model,
             auto_scale,
+            batch_bubble_detector_model,
+            batch_padding_pixels,
+            batch_outside_text_enabled,
         ]
 
         reset_outputs = [
@@ -1751,6 +1828,7 @@ def create_layout(
             batch_input_language,
             batch_output_language,
             batch_font_dropdown,
+            batch_outside_text_osb_font_pack,
             enable_web_search_checkbox,
             enable_code_execution_checkbox,
             image_detail_dropdown,
@@ -1803,6 +1881,9 @@ def create_layout(
             image_upscale_model,
             auto_scale,
             batch_parallel_requests,
+            batch_bubble_detector_model,
+            batch_padding_pixels,
+            batch_outside_text_enabled,
         ]
 
         translate_inputs = [
@@ -1911,9 +1992,13 @@ def create_layout(
             batch_input_language,
             batch_output_language,
             batch_font_dropdown,
+            batch_outside_text_osb_font_pack,
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
+            batch_bubble_detector_model,
+            batch_padding_pixels,
+            batch_outside_text_enabled,
         ]
 
         batch_inputs = [
@@ -2023,9 +2108,13 @@ def create_layout(
             batch_input_language,
             batch_output_language,
             batch_font_dropdown,
+            batch_outside_text_osb_font_pack,
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
+            batch_bubble_detector_model,
+            batch_padding_pixels,
+            batch_outside_text_enabled,
             batch_workflow_mode,
             batch_large_directory_mode,
             batch_large_directory_path,
@@ -2231,7 +2320,7 @@ def create_layout(
 
         # OSB enable/disable handler
         outside_text_enabled.change(
-            fn=lambda x: gr.update(visible=x),
+            fn=lambda x: gr.update(visible=True),
             inputs=outside_text_enabled,
             outputs=outside_text_settings_wrapper,
             queue=False,
@@ -2455,6 +2544,7 @@ def create_layout(
             font_dropdown,
             batch_font_dropdown,
             outside_text_osb_font_pack,
+            batch_outside_text_osb_font_pack,
         ]
         refresh_resources_button.click(
             fn=functools.partial(
@@ -2615,3 +2705,5 @@ def create_layout(
         )
 
     return app
+
+
