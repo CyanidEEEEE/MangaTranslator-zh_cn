@@ -77,17 +77,27 @@
 ai模型并不能保证文字方向判断一定正确，如果想要修改请使用自定义文字样式功能，去修改对应的翻译文件夹中的manga_script_translated.txt，参考格式如下：
 
 === PAGE: 40_038.jpg ===
+
 1: 滋溜[font:yingfeng,size:100,direction:horizontal]
+
 2: 滋溜[size:200]
+
 3: 滋溜[font:Sweat,size:100]
+
 4: 滋溜[font:zhuifeng,size:100]
+
 5: 滋溜[font:zhuifeng,size:300]
+
 6: 呜、唔……！
+
 7: 哈……再、再多一点……[font:PingFang,direction:vertical]
+
 8: 诶？
 
 自定义样式可调节三种属性，分别是font（字体）、size（大小，但是还是会受到框大小限制）和direction（框方向）
 
 font请填入放入fonts文件夹中的字体文件夹的对应名称
+
 size填入数字即可
+
 direction填入horizontal（横版）或vertical（竖版）
