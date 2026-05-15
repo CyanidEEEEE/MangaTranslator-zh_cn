@@ -27,6 +27,7 @@ from utils.model_metadata import (
     is_gpt5_series,
     is_moonshot_reasoning_model,
     is_openai_compatible_reasoning_model,
+    is_openai_model_family,
     is_openai_reasoning_model,
     is_opus_45_model,
     is_opus_47_model,
@@ -722,11 +723,13 @@ def get_image_detail_config(
     provider: str, model_name: Optional[str]
 ) -> Tuple[bool, List[str], str, str]:
     """Get image detail configuration for a provider/model combination."""
-    if provider != "OpenAI":
+    if provider != "OpenAI" and not (
+        provider == "OpenRouter" and is_openai_model_family(model_name)
+    ):
         return False, ["auto"], "auto", ""
 
     choices = ["auto", "high", "low"]
-    info = "Detail level for OpenAI to process bubble/context images."
+    info = "Detail level for OpenAI-compatible image handling."
 
     if supports_openai_original_image_detail(model_name):
         choices = ["auto", "original", "high", "low"]

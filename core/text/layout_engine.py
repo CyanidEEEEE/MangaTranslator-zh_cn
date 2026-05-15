@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -9,8 +10,11 @@ from core.text.text_processing import (
     STYLE_PATTERN,
     find_optimal_breaks_dp,
     find_optimal_breaks_contour_dp,
+    is_detached_trailing_punctuation,
     is_cjk_character,
     parse_styled_segments,
+    split_hangul_word_for_wrapping,
+    strip_no_space_before_marker,
     tokenize_styled_text,
     try_hyphenate_word,
 )
@@ -19,6 +23,9 @@ from utils.logging import log_message
 
 # Epsilon to guard rounding when converting from HarfBuzz 26.6 fixed-point.
 VISUAL_WIDTH_EPSILON = 0.0
+HB_26_6_SCALE_FACTOR = 64.0
+VERTICAL_ADVANCE_TRACKING = 0.90
+VERTICAL_GROUPED_PUNCTUATION = set(".,;:!?…。．！？｡")
 
 
 def _is_predominantly_cjk(text: str) -> bool:
@@ -138,6 +145,191 @@ def calculate_styled_line_width(
     return visual_width_all + VISUAL_WIDTH_EPSILON
 
 
+def _is_separator_or_space(ch: str) -> bool:
+    try:
+        category = unicodedata.category(ch)
+    except Exception:
+        return ch.isspace()
+    return ch.isspace() or (len(category) > 0 and category[0] == "Z")
+
+
+def _iter_vertical_units(text: str) -> List[Tuple[str, str]]:
+    units: List[Tuple[str, str]] = []
+    for segment_text, style_name in parse_styled_segments(text):
+        current = ""
+        current_is_punctuation = False
+        for ch in segment_text:
+            if _is_separator_or_space(ch):
+                if current:
+                    units.append((current, style_name))
+                    current = ""
+                    current_is_punctuation = False
+                continue
+            if unicodedata.combining(ch) and current:
+                current += ch
+                continue
+            ch_is_punctuation = ch in VERTICAL_GROUPED_PUNCTUATION
+            if current and current_is_punctuation and ch_is_punctuation:
+                current += ch
+                continue
+            if current:
+                units.append((current, style_name))
+            current = ch
+            current_is_punctuation = ch_is_punctuation
+        if current:
+            units.append((current, style_name))
+    return units
+
+
+def _measure_vertical_unit(
+    text: str,
+    style_name: str,
+    font_size: int,
+    loaded_hb_faces: Dict[str, Optional[hb.Face]],
+    features: Dict[str, bool],
+) -> Optional[Dict]:
+    hb_face = loaded_hb_faces.get(style_name) or loaded_hb_faces.get("regular")
+    if hb_face is None:
+        return None
+
+    hb_font = hb.Font(hb_face)
+    hb_font.ptem = float(font_size)
+    hb_scale = int(font_size * 64)
+    hb_font.scale = (hb_scale, hb_scale)
+
+    infos, positions, _ = shape_line(text, hb_font, features)
+    if not infos or not positions:
+        return None
+
+    cursor_x = 0
+    left = float("inf")
+    right = float("-inf")
+    top = float("inf")
+    bottom = float("-inf")
+    vertical_advances = []
+    first_vertical_origin_y: Optional[float] = None
+
+    for info, pos in zip(infos, positions):
+        extents = hb_font.get_glyph_extents(info.codepoint)
+        origin_x = cursor_x + pos.x_offset
+        origin_y = -pos.y_offset
+
+        if extents:
+            glyph_x1 = origin_x + extents.x_bearing
+            glyph_x2 = glyph_x1 + extents.width
+            glyph_y1 = origin_y - extents.y_bearing
+            glyph_y2 = origin_y - (extents.y_bearing + extents.height)
+        else:
+            glyph_x1 = origin_x
+            glyph_x2 = origin_x + pos.x_advance
+            glyph_y1 = origin_y - font_size * 64
+            glyph_y2 = origin_y
+
+        left = min(left, glyph_x1, glyph_x2)
+        right = max(right, glyph_x1, glyph_x2)
+        top = min(top, glyph_y1, glyph_y2)
+        bottom = max(bottom, glyph_y1, glyph_y2)
+        cursor_x += pos.x_advance
+
+        vertical_advance = hb_font.get_glyph_v_advance(info.codepoint)
+        if vertical_advance:
+            vertical_advances.append(abs(vertical_advance) / HB_26_6_SCALE_FACTOR)
+
+        if first_vertical_origin_y is None:
+            vertical_origin = hb_font.get_glyph_v_origin(info.codepoint)
+            if vertical_origin is not None:
+                _, vertical_origin_y = vertical_origin
+                first_vertical_origin_y = vertical_origin_y / HB_26_6_SCALE_FACTOR
+
+    if left == float("inf") or right == float("-inf"):
+        return None
+
+    visual_width = max(1.0, (right - left) / HB_26_6_SCALE_FACTOR)
+    visual_height = max(1.0, (bottom - top) / HB_26_6_SCALE_FACTOR)
+    advance_height = max(vertical_advances) if vertical_advances else 0.0
+    if advance_height <= 0:
+        advance_height = max(visual_height, float(font_size))
+
+    if first_vertical_origin_y is None:
+        first_vertical_origin_y = -top / HB_26_6_SCALE_FACTOR + max(
+            0.0, (advance_height - visual_height) / 2.0
+        )
+
+    return {
+        "text_with_markers": text,
+        "style": style_name,
+        "width": visual_width,
+        "height": visual_height,
+        "advance_height": advance_height,
+        "baseline_offset_y": first_vertical_origin_y,
+        "left": left / HB_26_6_SCALE_FACTOR,
+        "right": right / HB_26_6_SCALE_FACTOR,
+        "top": top / HB_26_6_SCALE_FACTOR,
+        "bottom": bottom / HB_26_6_SCALE_FACTOR,
+    }
+
+
+def _build_vertical_layout(
+    text: str,
+    font_size: int,
+    max_render_width: float,
+    max_render_height: float,
+    loaded_hb_faces: Dict[str, Optional[hb.Face]],
+    features_to_enable: Dict[str, bool],
+    line_spacing_mult: float,
+    metrics,
+) -> Optional[Dict]:
+    lines_data_at_size = []
+    for unit_text, style_name in _iter_vertical_units(text):
+        unit = _measure_vertical_unit(
+            unit_text,
+            style_name,
+            font_size,
+            loaded_hb_faces,
+            features_to_enable,
+        )
+        if unit is not None:
+            lines_data_at_size.append(unit)
+
+    if not lines_data_at_size:
+        return None
+
+    current_y = 0.0
+    for index, unit in enumerate(lines_data_at_size):
+        advance_height = max(unit["height"], unit.get("advance_height", 0.0))
+        step_height = max(
+            unit["height"],
+            advance_height * line_spacing_mult * VERTICAL_ADVANCE_TRACKING,
+        )
+        unit["advance_height"] = advance_height
+        unit["origin_y"] = current_y + unit.get("baseline_offset_y", 0.0)
+        current_y += advance_height if index == len(lines_data_at_size) - 1 else step_height
+
+    visual_top = min(unit["origin_y"] + unit["top"] for unit in lines_data_at_size)
+    visual_bottom = max(
+        unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size
+    )
+    content_top = min(0.0, visual_top)
+    content_bottom = max(current_y, visual_bottom)
+    if content_top < 0.0:
+        for unit in lines_data_at_size:
+            unit["origin_y"] -= content_top
+        content_bottom -= content_top
+
+    block_height = max(1.0, content_bottom)
+    max_line_width = max(unit["width"] for unit in lines_data_at_size)
+    if max_line_width <= max_render_width and block_height <= max_render_height:
+        return {
+            "lines": lines_data_at_size,
+            "metrics": metrics,
+            "max_line_width": max_line_width,
+            "line_height": 0.0,
+            "block_height": block_height,
+            "orientation": "vertical",
+        }
+    return None
+
+
 def check_fit(
     font_size: int,
     text: str,
@@ -158,6 +350,7 @@ def check_fit(
     collision_mask: Optional[np.ndarray] = None,
     target_center: Optional[Tuple[float, float]] = None,
     mask_offset: Tuple[float, float] = (0.0, 0.0),
+    vertical_stack: bool = False,
 ) -> Optional[Dict]:
     """Check if text fits within the given dimensions at the specified font size.
 
@@ -208,7 +401,19 @@ def check_fit(
                 )
             single_line_height = font_size * 1.2 * line_spacing_mult
 
-        # Respect explicit newlines as hard line breaks (e.g., for vertical stacking)
+        if vertical_stack:
+            return _build_vertical_layout(
+                text,
+                font_size,
+                max_render_width,
+                max_render_height,
+                loaded_hb_faces,
+                features_to_enable,
+                line_spacing_mult,
+                metrics,
+            )
+
+        # Respect explicit newlines as hard line breaks
         if "\n" in text:
             explicit_lines = text.split("\n")
             current_max_line_width = 0.0
@@ -235,6 +440,8 @@ def check_fit(
                     "metrics": metrics,
                     "max_line_width": current_max_line_width,
                     "line_height": single_line_height,
+                    "block_height": total_block_height,
+                    "orientation": "horizontal",
                 }
             return None
 
@@ -279,9 +486,13 @@ def check_fit(
                             )
                             return w <= max_render_width
 
-                        split_parts = try_hyphenate_word(
-                            core_text, hyphenation_min_word_length, width_test_func
-                        )
+                        split_parts = split_hangul_word_for_wrapping(core_text)
+                        if split_parts is None:
+                            split_parts = try_hyphenate_word(
+                                core_text,
+                                hyphenation_min_word_length,
+                                width_test_func,
+                            )
                         if split_parts:
                             augmented_tokens.extend(wrap_part(p) for p in split_parts)
                         else:
@@ -305,10 +516,8 @@ def check_fit(
                     match = STYLE_PATTERN.match(tok)
                     content = match.group(2) if match else tok
 
-                    # Skip gluing for disconnected ellipsis to allow wrapping
-                    if _detach and re.match(
-                        r"^(\.{2,})[\)\]\}\u2019\u201D\'\"]*$", content
-                    ):
+                    # Skip detached trailing punctuation to allow wrapping.
+                    if _detach and is_detached_trailing_punctuation(content):
                         glued.append(tok)
                         continue
 
@@ -334,7 +543,10 @@ def check_fit(
                     return word_width_cache[cached_key]
 
             width_val = calculate_styled_line_width(
-                word, font_size, loaded_hb_faces, features_to_enable
+                strip_no_space_before_marker(word),
+                font_size,
+                loaded_hb_faces,
+                features_to_enable,
             )
 
             if word_width_cache is not None:
@@ -537,6 +749,8 @@ def check_fit(
                     "metrics": metrics,
                     "max_line_width": current_max_line_width,
                     "line_height": single_line_height,
+                    "block_height": total_block_height,
+                    "orientation": "horizontal",
                 }
 
         return None
@@ -630,6 +844,7 @@ def find_optimal_layout(
     target_center: Optional[Tuple[float, float]] = None,
     detach_trailing_ellipsis: bool = True,
     mask_offset: Tuple[float, float] = (0.0, 0.0),
+    vertical_stack: bool = False,
 ) -> Dict:
     """Find the optimal font size and layout for text within given dimensions.
 
@@ -675,6 +890,7 @@ def find_optimal_layout(
     best_fit_metrics = None
     best_fit_max_line_width = float("inf")
     best_fit_line_height = 0.0
+    best_fit_block_height = 0.0
 
     word_width_cache: Dict[Tuple[str, int], float] = {}
 
@@ -711,11 +927,12 @@ def find_optimal_layout(
             collision_mask=collision_mask,
             target_center=target_center,
             mask_offset=mask_offset,
+            vertical_stack=vertical_stack,
         )
 
         if fit_data is not None:
             has_collision = False
-            if collision_mask is not None and target_center is not None:
+            if collision_mask is not None and target_center is not None and not vertical_stack:
                 has_collision = _check_collision(
                     fit_data["lines"],
                     target_center,
@@ -730,7 +947,12 @@ def find_optimal_layout(
                 # Only apply this penalty if there are multiple characters and multiple lines.
                 # Skip this check for CJK text: square glyphs look natural even at 1 char per line.
                 is_degenerate_vertical = False
-                if len(fit_data["lines"]) > 1 and len(clean_text) > 1 and not _is_predominantly_cjk(clean_text):
+                if (
+                    not vertical_stack
+                    and len(fit_data["lines"]) > 1
+                    and len(clean_text) > 1
+                    and not _is_predominantly_cjk(clean_text)
+                ):
                     if len(clean_text) <= 3:
                         # For 2 or 3 characters, any wrapping makes it look vertical. Force 1 line.
                         is_degenerate_vertical = True
@@ -747,6 +969,7 @@ def find_optimal_layout(
                 best_fit_metrics = fit_data["metrics"]
                 best_fit_max_line_width = fit_data["max_line_width"]
                 best_fit_line_height = fit_data["line_height"]
+                best_fit_block_height = fit_data.get("block_height", 0.0)
                 succeeded_at_current_size = True
 
         if succeeded_at_current_size:
@@ -780,6 +1003,7 @@ def find_optimal_layout(
             collision_mask=None,
             target_center=target_center,
             mask_offset=mask_offset,
+            vertical_stack=vertical_stack,
         )
 
         if forced_fit is not None:
@@ -789,6 +1013,8 @@ def find_optimal_layout(
                 "metrics": forced_fit["metrics"],
                 "max_line_width": forced_fit["max_line_width"],
                 "line_height": forced_fit["line_height"],
+                "block_height": forced_fit.get("block_height", 0.0),
+                "orientation": "vertical" if vertical_stack else "horizontal",
             }
         else:
             raise RenderingError(
@@ -801,4 +1027,6 @@ def find_optimal_layout(
         "metrics": best_fit_metrics,
         "max_line_width": best_fit_max_line_width,
         "line_height": best_fit_line_height,
+        "block_height": best_fit_block_height,
+        "orientation": "vertical" if vertical_stack else "horizontal",
     }

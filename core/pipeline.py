@@ -6,6 +6,7 @@ import math
 import os
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
@@ -54,6 +55,20 @@ if TYPE_CHECKING:
     from ui.cancellation import CancellationManager
 
 ENABLE_COMPONENT_ORDER_DEBUG = False
+PREVIOUS_CONTEXT_CACHE_MAX_SIZE = 32
+NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
+
+
+def _natural_text_sort_key(text: str) -> Tuple[Tuple[int, Union[int, str], str], ...]:
+    return tuple(
+        (0, int(part), part) if part.isdigit() else (1, part.lower(), part)
+        for part in NATURAL_SORT_TOKEN_RE.split(text)
+        if part
+    )
+
+
+def _natural_path_sort_key(path: Path):
+    return tuple(_natural_text_sort_key(part) for part in path.parts)
 
 
 def _debug_mask_bbox(mask):
@@ -89,6 +104,222 @@ def get_image_encoding_params(pil_image_format: Optional[str]) -> Tuple[str, str
     if pil_image_format and pil_image_format.upper() == "PNG":
         return "image/png", ".png"
     return "image/jpeg", ".jpg"
+
+
+def _normalize_context_image_mode(
+    image: Image.Image,
+    mime_type: str,
+    verbose: bool = False,
+) -> Image.Image:
+    if mime_type == "image/jpeg":
+        if image.mode in ("RGBA", "LA"):
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[-1])
+            return background
+        if image.mode != "RGB":
+            log_message(
+                f"Converting {image.mode} previous context image to RGB",
+                verbose=verbose,
+            )
+            return image.convert("RGB")
+        return image
+
+    if image.mode not in ("RGB", "RGBA", "L"):
+        log_message(
+            f"Converting {image.mode} previous context image to RGBA",
+            verbose=verbose,
+        )
+        return image.convert("RGBA")
+    return image
+
+
+def _encode_previous_context_source_page(
+    image_path: Path,
+    config: MangaTranslatorConfig,
+    verbose: bool = False,
+) -> Optional[Dict[str, str]]:
+    try:
+        with Image.open(image_path) as source_image:
+            image_format = source_image.format
+            mime_type, cv2_ext = get_image_encoding_params(image_format)
+            context_image_pil = _normalize_context_image_mode(
+                source_image.copy(),
+                mime_type,
+                verbose,
+            )
+
+        effective_context_max_side = scale_length(
+            config.translation.context_image_max_side_pixels,
+            None,
+            minimum=512,
+            maximum=4096,
+        )
+        context_upscale_method = (
+            "none" if config.test_mode else config.translation.upscale_method
+        )
+
+        if context_upscale_method in ("model", "model_lite"):
+            model_manager = get_model_manager()
+            if context_upscale_method == "model":
+                upscale_model = model_manager.load_upscale(verbose=verbose)
+            else:
+                upscale_model = model_manager.load_upscale_lite(verbose=verbose)
+            context_image_pil = upscale_image_to_dimension(
+                upscale_model,
+                context_image_pil,
+                effective_context_max_side,
+                config.device,
+                "max",
+                context_upscale_method,
+                verbose,
+            )
+            context_image_pil = resize_to_max_side(
+                context_image_pil,
+                effective_context_max_side,
+                verbose=verbose,
+            )
+            model_manager.clear_cache()
+        elif context_upscale_method == "lanczos":
+            context_image_pil = resize_to_max_side(
+                context_image_pil,
+                effective_context_max_side,
+                verbose=verbose,
+            )
+
+        context_image_cv = pil_to_cv2(context_image_pil)
+        is_success, buffer = cv2.imencode(cv2_ext, context_image_cv)
+        if not is_success:
+            raise ImageProcessingError(
+                f"Previous context image encoding to {cv2_ext} failed"
+            )
+        return {
+            "mime_type": mime_type,
+            "data": base64.b64encode(buffer).decode("utf-8"),
+        }
+    except Exception as e:
+        log_message(
+            f"Warning: Failed to encode previous context image {image_path}: {e}",
+            always_print=True,
+        )
+        return None
+
+
+def _previous_context_cache_key(
+    image_path: Path,
+    config: MangaTranslatorConfig,
+) -> Tuple[Any, ...]:
+    stat = image_path.stat()
+    context_upscale_method = (
+        "none" if config.test_mode else config.translation.upscale_method
+    )
+    return (
+        str(image_path.resolve()),
+        stat.st_mtime_ns,
+        stat.st_size,
+        config.translation.context_image_max_side_pixels,
+        context_upscale_method,
+    )
+
+
+def _get_cached_previous_context_image(
+    image_path: Path,
+    config: MangaTranslatorConfig,
+    context_cache: Optional[OrderedDict],
+    context_cache_lock: Optional[threading.Lock],
+) -> Optional[Dict[str, str]]:
+    verbose = config.verbose
+    if context_cache is None:
+        return _encode_previous_context_source_page(image_path, config, verbose)
+
+    try:
+        cache_key = _previous_context_cache_key(image_path, config)
+    except Exception:
+        return _encode_previous_context_source_page(image_path, config, verbose)
+
+    if context_cache_lock:
+        with context_cache_lock:
+            cached = context_cache.get(cache_key)
+            if cached is not None:
+                context_cache.move_to_end(cache_key)
+                return cached
+
+    encoded = _encode_previous_context_source_page(image_path, config, verbose)
+    if encoded is None:
+        return None
+
+    if context_cache_lock:
+        with context_cache_lock:
+            context_cache[cache_key] = encoded
+            context_cache.move_to_end(cache_key)
+            while len(context_cache) > PREVIOUS_CONTEXT_CACHE_MAX_SIZE:
+                context_cache.popitem(last=False)
+    return encoded
+
+
+def _build_previous_context_images(
+    image_files: List[Path],
+    image_index: int,
+    config: MangaTranslatorConfig,
+    context_cache: Optional[OrderedDict] = None,
+    context_cache_lock: Optional[threading.Lock] = None,
+) -> List[Dict[str, str]]:
+    if not getattr(config.translation, "send_full_page_context", False):
+        return []
+    if getattr(config.translation, "ocr_method", "LLM") != "LLM":
+        return []
+
+    requested_count = int(
+        getattr(config.translation, "previous_context_image_count", 0) or 0
+    )
+    if requested_count <= 0:
+        return []
+
+    start_index = max(0, image_index - requested_count)
+    previous_paths = image_files[start_index:image_index]
+    previous_images = []
+    for previous_path in previous_paths:
+        encoded = _get_cached_previous_context_image(
+            previous_path,
+            config,
+            context_cache,
+            context_cache_lock,
+        )
+        if encoded is not None:
+            previous_images.append(encoded)
+    return previous_images
+
+
+def _build_previous_context_texts(
+    image_files: List[Path],
+    image_index: int,
+    config: MangaTranslatorConfig,
+    ocr_text_history: Optional[Dict[Path, List[str]]] = None,
+    ocr_text_history_lock: Optional[threading.Lock] = None,
+) -> List[List[str]]:
+    requested_count = int(
+        getattr(config.translation, "previous_context_text_count", 0) or 0
+    )
+    if requested_count <= 0 or ocr_text_history is None:
+        return []
+
+    start_index = max(0, image_index - requested_count)
+    previous_paths = image_files[start_index:image_index]
+    if not previous_paths:
+        return []
+
+    previous_texts: List[List[str]] = []
+    if ocr_text_history_lock is not None:
+        with ocr_text_history_lock:
+            for previous_path in previous_paths:
+                texts = ocr_text_history.get(previous_path)
+                if texts:
+                    previous_texts.append(list(texts))
+    else:
+        for previous_path in previous_paths:
+            texts = ocr_text_history.get(previous_path)
+            if texts:
+                previous_texts.append(list(texts))
+    return previous_texts
 
 
 def _load_debug_font(size: int):
@@ -333,11 +564,17 @@ def translate_and_render(
     config: MangaTranslatorConfig,
     output_path: Optional[Union[str, Path]] = None,
     cancellation_manager: Optional["CancellationManager"] = None,
+    previous_context_images: Optional[List[Dict[str, str]]] = None,
+    previous_context_texts: Optional[List[List[str]]] = None,
+    previous_context_texts_provider: Optional[Callable[[], List[List[str]]]] = None,
+    ocr_texts_out: Optional[List[str]] = None,
 ):
     start_time = time.time()
     image_path = Path(image_path)
     verbose = config.verbose
     device = config.device
+    previous_context_images = previous_context_images or []
+    previous_context_texts = previous_context_texts or []
 
     log_message(f"Using device: {device}", verbose=verbose)
 
@@ -565,6 +802,7 @@ def translate_and_render(
                     kontext_backend=config.outside_text.kontext_backend,
                     flux_low_vram=config.outside_text.flux_low_vram,
                     flux_luminance_correction=config.outside_text.flux_luminance_correction,
+                    flux_upscale_small_crops=config.outside_text.flux_upscale_small_crops,
                     bubble_detector_model=config.detection.bubble_detector_model,
                     text_segmentation_prob_map=text_prob_map,
                 )
@@ -684,6 +922,10 @@ def translate_and_render(
             
             if bubble_images_b64:
                 try:
+                    if previous_context_texts_provider is not None:
+                        previous_context_texts = (
+                            previous_context_texts_provider() or []
+                        )
                     translated_texts = call_translation_api_batch(
                         config=config.translation,
                         images_b64=bubble_images_b64,
@@ -692,6 +934,9 @@ def translate_and_render(
                         full_image_mime_type=full_image_mime_type
                         or "image/jpeg",
                         bubble_metadata=sorted_bubble_data,
+                        previous_context_images=previous_context_images,
+                        previous_context_texts=previous_context_texts,
+                        ocr_texts_output=ocr_texts_out,
                         debug=verbose,
                     )
                 except Exception as e:
@@ -822,7 +1067,7 @@ def translate_and_render(
                             stroke_width_ratio = 0.0
                             outline_w = 0.0
                             
-                        vertical_stack = False
+                        vertical_stack = bool(is_originally_vertical)
                         rotation_deg = 0.0
 
                     min_font = 4
@@ -833,6 +1078,34 @@ def translate_and_render(
                         use_ligatures=use_ligs,
                         outline_width=outline_w,
                         padding_pixels=padding_pixels,
+                        hyphenate_before_scaling=config.rendering.hyphenate_before_scaling,
+                        hyphen_penalty=config.rendering.hyphen_penalty,
+                        hyphenation_min_word_length=config.rendering.hyphenation_min_word_length,
+                        badness_exponent=config.rendering.badness_exponent,
+                        supersampling_factor=config.rendering.supersampling_factor,
+                        use_subpixel_rendering=(
+                            config.outside_text.osb_use_subpixel_rendering
+                            if is_outside_text
+                            else config.rendering.use_subpixel_rendering
+                        ),
+                        font_hinting=(
+                            config.outside_text.osb_font_hinting
+                            if is_outside_text
+                            else config.rendering.font_hinting
+                        ),
+                        detach_trailing_ellipsis=getattr(
+                            config.rendering, "detach_trailing_ellipsis", True
+                        ),
+                        detach_trailing_punctuation=getattr(
+                            config.rendering,
+                            "detach_trailing_punctuation",
+                            getattr(config.rendering, "detach_trailing_ellipsis", True),
+                        ),
+                        auto_vertical_text=(
+                            False
+                            if is_outside_text
+                            else getattr(config.rendering, "auto_vertical_text", False)
+                        ),
                     )
                     
                     try:
@@ -931,70 +1204,201 @@ async def _batch_translate_parallel(
     progress_callback: Optional[Callable[[float, str], None]],
     cancellation_manager: Optional["CancellationManager"],
 ) -> Dict[str, Any]:
+    """Process images in parallel while preserving prior-page OCR context order."""
     total_images = len(image_files)
     n_workers = config.parallel_requests
     results = {"success_count": 0, "error_count": 0, "errors": {}}
+    previous_context_cache = OrderedDict()
+    previous_context_cache_lock = threading.Lock()
+    ocr_text_history: Dict[Path, List[str]] = {}
+    ocr_text_history_lock = threading.Lock()
+    ocr_text_ready_events = [threading.Event() for _ in image_files]
+    requested_text_context_count = int(
+        getattr(config.translation, "previous_context_text_count", 0) or 0
+    )
+
+    log_message(
+        f"Starting parallel batch processing: {total_images} images, "
+        f"{n_workers} parallel workers",
+        always_print=True,
+    )
 
     first_img = image_files[0]
     first_output, first_display, first_key = _resolve_output_path(
         first_img, input_dir, output_dir, config, preserve_structure
     )
     try:
-        translate_and_render(
-            first_img, config, first_output, cancellation_manager=cancellation_manager
+        if cancellation_manager and cancellation_manager.is_cancelled():
+            raise CancellationError("Batch process cancelled by user.")
+        first_previous_context_images = _build_previous_context_images(
+            image_files,
+            0,
+            config,
+            previous_context_cache,
+            previous_context_cache_lock,
         )
+        first_previous_context_texts = _build_previous_context_texts(
+            image_files,
+            0,
+            config,
+            ocr_text_history,
+            ocr_text_history_lock,
+        )
+        first_ocr_texts: List[str] = []
+        translate_and_render(
+            first_img,
+            config,
+            first_output,
+            cancellation_manager=cancellation_manager,
+            previous_context_images=first_previous_context_images,
+            previous_context_texts=first_previous_context_texts,
+            ocr_texts_out=first_ocr_texts,
+        )
+        if first_ocr_texts:
+            with ocr_text_history_lock:
+                ocr_text_history[first_img] = first_ocr_texts
         results["success_count"] += 1
+    except CancellationError:
+        raise
     except Exception as e:
+        log_message(f"Error processing {first_display}: {str(e)}", always_print=True)
         results["error_count"] += 1
         results["errors"][first_key] = str(e)
+    finally:
+        ocr_text_ready_events[0].set()
 
     completed_count = 1
     if progress_callback:
-        progress_callback(1 / total_images, f"Completed 1/{total_images} images")
+        has_errors = results["error_count"] > 0
+        suffix = " (with errors)" if has_errors else ""
+        progress_callback(
+            1 / total_images, f"Completed 1/{total_images} images{suffix}"
+        )
 
     remaining = image_files[1:]
     if not remaining:
         return results
 
+    if cancellation_manager and cancellation_manager.is_cancelled():
+        raise CancellationError("Batch process cancelled by user.")
+
     sem = asyncio.Semaphore(n_workers)
     results_lock = threading.Lock()
     cancelled = False
+
+    def _wait_for_required_previous_ocr(index: int) -> None:
+        if requested_text_context_count <= 0:
+            return
+        start_index = max(0, index - requested_text_context_count)
+        for previous_index in range(start_index, index):
+            if cancellation_manager and cancellation_manager.is_cancelled():
+                raise CancellationError("Batch process cancelled by user.")
+            while not ocr_text_ready_events[previous_index].wait(timeout=0.2):
+                if cancellation_manager and cancellation_manager.is_cancelled():
+                    raise CancellationError("Batch process cancelled by user.")
+            if cancellation_manager and cancellation_manager.is_cancelled():
+                raise CancellationError("Batch process cancelled by user.")
 
     def _process_single(img_path: Path, index: int) -> Tuple[str, str]:
         output_path, display_path, error_key = _resolve_output_path(
             img_path, input_dir, output_dir, config, preserve_structure
         )
-        translate_and_render(
-            img_path, config, output_path, cancellation_manager=cancellation_manager
+        log_message(
+            f"Processing {index + 1}/{total_images}: {display_path}",
+            always_print=True,
         )
+        previous_context_images = _build_previous_context_images(
+            image_files,
+            index,
+            config,
+            previous_context_cache,
+            previous_context_cache_lock,
+        )
+
+        def previous_context_texts_provider() -> List[List[str]]:
+            _wait_for_required_previous_ocr(index)
+            return _build_previous_context_texts(
+                image_files,
+                index,
+                config,
+                ocr_text_history,
+                ocr_text_history_lock,
+            )
+
+        captured_ocr_texts: List[str] = []
+        translate_and_render(
+            img_path,
+            config,
+            output_path,
+            cancellation_manager=cancellation_manager,
+            previous_context_images=previous_context_images,
+            previous_context_texts_provider=previous_context_texts_provider,
+            ocr_texts_out=captured_ocr_texts,
+        )
+        if captured_ocr_texts:
+            with ocr_text_history_lock:
+                ocr_text_history[img_path] = captured_ocr_texts
         return display_path, error_key
 
     async def _worker(img_path: Path, index: int, executor: ThreadPoolExecutor):
         nonlocal completed_count, cancelled
-        async with sem:
-            loop = asyncio.get_event_loop()
-            try:
-                await loop.run_in_executor(executor, _process_single, img_path, index)
-                with results_lock:
-                    results["success_count"] += 1
-                    completed_count += 1
-                    count = completed_count
-            except Exception as e:
-                _, display_path, error_key = _resolve_output_path(
-                    img_path, input_dir, output_dir, config, preserve_structure
-                )
-                with results_lock:
-                    results["error_count"] += 1
-                    results["errors"][error_key] = str(e)
-                    completed_count += 1
-                    count = completed_count
+        try:
+            async with sem:
+                if cancelled or (
+                    cancellation_manager and cancellation_manager.is_cancelled()
+                ):
+                    cancelled = True
+                    return
 
-            if progress_callback:
-                progress_callback(count / total_images, f"Completed {count}/{total_images} images")
+                loop = asyncio.get_event_loop()
+                try:
+                    await loop.run_in_executor(
+                        executor, _process_single, img_path, index
+                    )
+                    with results_lock:
+                        results["success_count"] += 1
+                        completed_count += 1
+                        count = completed_count
+                except CancellationError:
+                    cancelled = True
+                    raise
+                except Exception as e:
+                    _, display_path, error_key = _resolve_output_path(
+                        img_path, input_dir, output_dir, config, preserve_structure
+                    )
+                    log_message(
+                        f"Error processing {display_path}: {str(e)}",
+                        always_print=True,
+                    )
+                    with results_lock:
+                        results["error_count"] += 1
+                        results["errors"][error_key] = str(e)
+                        completed_count += 1
+                        count = completed_count
+
+                if progress_callback:
+                    progress = count / total_images
+                    has_errors = results["error_count"] > 0
+                    suffix = " (with errors)" if has_errors else ""
+                    progress_callback(
+                        progress, f"Completed {count}/{total_images} images{suffix}"
+                    )
+        except CancellationError:
+            cancelled = True
+            raise
+        finally:
+            ocr_text_ready_events[index].set()
+            if cancelled:
+                for event in ocr_text_ready_events:
+                    event.set()
 
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         tasks = [_worker(img, i, executor) for i, img in enumerate(remaining, start=1)]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for exc in gathered:
+        if isinstance(exc, CancellationError):
+            raise exc
 
     return results
 
@@ -1012,6 +1416,8 @@ def batch_translate_images(
     if not output_dir:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_dir = Path("./output") / timestamp
+    else:
+        output_dir = Path(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     image_extensions = [".jpg", ".jpeg", ".png", ".webp"]
 
@@ -1025,7 +1431,16 @@ def batch_translate_images(
     else:
         image_files = [f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in image_extensions]
 
-    image_files.sort(key=lambda p: p.name.lower())
+    def _batch_sort_key(path: Path):
+        try:
+            sort_path = (
+                path.relative_to(input_dir) if preserve_structure else Path(path.name)
+            )
+        except ValueError:
+            sort_path = path
+        return _natural_path_sort_key(sort_path)
+
+    image_files.sort(key=_batch_sort_key)
     if not image_files:
         return {"success_count": 0, "error_count": 0, "errors": {}}
 
@@ -1038,10 +1453,40 @@ def batch_translate_images(
         )
     else:
         results = {"success_count": 0, "error_count": 0, "errors": {}}
+        previous_context_cache = OrderedDict()
+        previous_context_cache_lock = threading.Lock()
+        ocr_text_history: Dict[Path, List[str]] = {}
+        ocr_text_history_lock = threading.Lock()
         for i, img_path in enumerate(image_files):
             try:
                 output_path, display_path, error_key = _resolve_output_path(img_path, input_dir, output_dir, config, preserve_structure)
-                translate_and_render(img_path, config, output_path, cancellation_manager=cancellation_manager)
+                previous_context_images = _build_previous_context_images(
+                    image_files,
+                    i,
+                    config,
+                    previous_context_cache,
+                    previous_context_cache_lock,
+                )
+                previous_context_texts = _build_previous_context_texts(
+                    image_files,
+                    i,
+                    config,
+                    ocr_text_history,
+                    ocr_text_history_lock,
+                )
+                captured_ocr_texts: List[str] = []
+                translate_and_render(
+                    img_path,
+                    config,
+                    output_path,
+                    cancellation_manager=cancellation_manager,
+                    previous_context_images=previous_context_images,
+                    previous_context_texts=previous_context_texts,
+                    ocr_texts_out=captured_ocr_texts,
+                )
+                if captured_ocr_texts:
+                    with ocr_text_history_lock:
+                        ocr_text_history[img_path] = captured_ocr_texts
                 results["success_count"] += 1
             except Exception as e:
                 results["error_count"] += 1
@@ -1301,7 +1746,12 @@ def extract_batch_script(input_dir, config, output_dir, cancellation_manager=Non
     os.makedirs(output_dir, exist_ok=True)
     
     image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
-    image_files = sorted([f for f in input_dir.rglob('*') if f.is_file() and f.suffix.lower() in image_extensions])
+    image_files = [
+        f
+        for f in input_dir.rglob('*')
+        if f.is_file() and f.suffix.lower() in image_extensions
+    ]
+    image_files.sort(key=lambda p: _natural_path_sort_key(p.relative_to(input_dir)))
     
     if not image_files:
         raise ValueError(f"No image files found in {input_dir}")
@@ -1847,6 +2297,7 @@ def render_batch_from_script(input_dir, json_path, config, output_dir, cancellat
             kontext_backend=config.outside_text.kontext_backend,
             flux_low_vram=config.outside_text.flux_low_vram,
             flux_luminance_correction=config.outside_text.flux_luminance_correction,
+            flux_upscale_small_crops=config.outside_text.flux_upscale_small_crops,
             bubble_detector_model=config.detection.bubble_detector_model,
             text_segmentation_prob_map=text_prob_map,
         )

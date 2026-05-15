@@ -24,9 +24,12 @@ from .font_manager import (
 from .layout_engine import find_optimal_layout, shape_line
 from .text_processing import (
     find_optimal_breaks_dp,
+    is_detached_trailing_punctuation,
     is_cjk_character,
     is_rtl_script,
     parse_styled_segments,
+    split_hangul_word_for_wrapping,
+    strip_no_space_before_marker,
     tokenize_styled_text,
     try_hyphenate_word,
 )
@@ -44,9 +47,12 @@ __all__ = [
     "find_optimal_layout",
     "shape_line",
     "find_optimal_breaks_dp",
+    "is_detached_trailing_punctuation",
     "is_cjk_character",
     "is_rtl_script",
     "parse_styled_segments",
+    "split_hangul_word_for_wrapping",
+    "strip_no_space_before_marker",
     "tokenize_styled_text",
     "try_hyphenate_word",
     "render_text_skia",

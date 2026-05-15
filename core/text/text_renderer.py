@@ -18,12 +18,65 @@ from core.text.font_manager import (
     sanitize_text_for_font,
 )
 from core.text.layout_engine import find_optimal_layout
-from core.text.text_processing import parse_styled_segments
+from core.text.text_processing import is_rtl_script, parse_styled_segments
 from utils.exceptions import FontError, ImageProcessingError, RenderingError
 from utils.logging import log_message
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining text color
 FALLBACK_PADDING_RATIO = 0.15  # 8% padding ratio when safe area calculation fails
+AUTO_VERTICAL_MIN_ASPECT_RATIO = 1.6
+AUTO_VERTICAL_MAX_CHARS = 12
+AUTO_VERTICAL_MAX_WORDS = 1
+AUTO_VERTICAL_MAX_HORIZONTAL_FILL = 0.45
+AUTO_VERTICAL_MIN_FILL_GAIN = 0.20
+
+
+def _plain_text_for_layout_policy(text: str) -> str:
+    return "".join(segment_text for segment_text, _ in parse_styled_segments(text))
+
+
+def _should_try_auto_vertical_text(
+    text: str,
+    max_render_width: float,
+    max_render_height: float,
+) -> bool:
+    if max_render_width <= 0 or max_render_height <= 0:
+        return False
+    if max_render_height / max_render_width < AUTO_VERTICAL_MIN_ASPECT_RATIO:
+        return False
+
+    plain_text = _plain_text_for_layout_policy(text).strip()
+    if not plain_text or is_rtl_script(plain_text):
+        return False
+
+    non_space_chars = sum(1 for ch in plain_text if not ch.isspace())
+    word_count = len(plain_text.split())
+    return (
+        non_space_chars <= AUTO_VERTICAL_MAX_CHARS
+        and word_count <= AUTO_VERTICAL_MAX_WORDS
+    )
+
+
+def _auto_vertical_layout_is_better(
+    horizontal_layout: dict,
+    vertical_layout: dict,
+    max_render_height: float,
+) -> bool:
+    if max_render_height <= 0:
+        return False
+
+    horizontal_block_height = horizontal_layout.get("block_height") or 0.0
+    vertical_block_height = vertical_layout.get("block_height") or 0.0
+    if horizontal_block_height <= 0 or vertical_block_height <= 0:
+        return False
+
+    horizontal_fill = horizontal_block_height / max_render_height
+    vertical_fill = vertical_block_height / max_render_height
+    return (
+        vertical_layout["font_size"] >= horizontal_layout["font_size"]
+        and horizontal_fill <= AUTO_VERTICAL_MAX_HORIZONTAL_FILL
+        and vertical_fill >= horizontal_fill + AUTO_VERTICAL_MIN_FILL_GAIN
+    )
 
 
 def render_text_skia(
@@ -97,21 +150,7 @@ def render_text_skia(
     if not clean_text:
         return pil_image
 
-    # Prepare text for layout (vertical stacking removes whitespace to stay single-column)
-    if vertical_stack:
-        import unicodedata
-
-        def _is_separator_or_space(ch: str) -> bool:
-            try:
-                cat = unicodedata.category(ch)
-            except Exception:
-                return ch.isspace()
-            return ch.isspace() or (len(cat) > 0 and cat[0] == "Z")
-
-        stacked_chars = [ch for ch in clean_text if not _is_separator_or_space(ch)]
-        layout_text = "\n".join(stacked_chars)
-    else:
-        layout_text = clean_text
+    layout_text = clean_text
 
     # Initialize config with defaults if not provided
     if config is None:
@@ -310,8 +349,14 @@ def render_text_skia(
             if _hb_face:
                 preload_hb_faces[style_key] = _hb_face
 
-    try:
-        layout_data = find_optimal_layout(
+    detach_trailing_punctuation = getattr(
+        config,
+        "detach_trailing_punctuation",
+        getattr(config, "detach_trailing_ellipsis", True),
+    )
+
+    def _find_layout(use_vertical_stack: bool) -> dict:
+        return find_optimal_layout(
             layout_text,
             max_render_width,
             max_render_height,
@@ -322,19 +367,60 @@ def render_text_skia(
             config.min_font_size,
             config.max_font_size,
             config.line_spacing_mult,
-            False if vertical_stack else config.hyphenate_before_scaling,
+            False if use_vertical_stack else config.hyphenate_before_scaling,
             config.hyphen_penalty,
             config.hyphenation_min_word_length,
             config.badness_exponent,
             verbose,
             bubble_id,
-            safe_area_mask_for_collision if safe_area_mask_for_collision is not None else cleaned_mask,
+            (
+                safe_area_mask_for_collision
+                if safe_area_mask_for_collision is not None
+                else cleaned_mask
+            ),
             (target_center_x, target_center_y),
-            config.detach_trailing_ellipsis,
+            detach_trailing_punctuation,
             mask_offset=(0.0, 0.0),
+            vertical_stack=use_vertical_stack,
         )
+
+    try:
+        layout_data = _find_layout(vertical_stack)
     except RenderingError as e:
-        raise RenderingError(f"Layout optimization failed: {e}") from e
+        if not (
+            getattr(config, "auto_vertical_text", False)
+            and not vertical_stack
+            and _should_try_auto_vertical_text(
+                layout_text, max_render_width, max_render_height
+            )
+        ):
+            raise RenderingError(f"Layout optimization failed: {e}") from e
+
+        try:
+            layout_data = _find_layout(True)
+            log_message(
+                "Using auto vertical text layout after horizontal layout failed",
+                verbose=verbose,
+            )
+        except RenderingError:
+            raise RenderingError(f"Layout optimization failed: {e}") from e
+    else:
+        if (
+            getattr(config, "auto_vertical_text", False)
+            and not vertical_stack
+            and _should_try_auto_vertical_text(
+                layout_text, max_render_width, max_render_height
+            )
+        ):
+            try:
+                vertical_layout_data = _find_layout(True)
+                if _auto_vertical_layout_is_better(
+                    layout_data, vertical_layout_data, max_render_height
+                ):
+                    layout_data = vertical_layout_data
+                    log_message("Using auto vertical text layout", verbose=verbose)
+            except RenderingError:
+                pass
 
     if layout_only:
         log_message(f"Rendered at size {layout_data['font_size']}", verbose=verbose)
@@ -437,13 +523,30 @@ def render_text_skia(
 
         # Scale font size in layout_data for rendering
         scaled_layout_data = layout_data.copy()
+        scaled_layout_data["lines"] = [
+            line_data.copy() for line_data in layout_data["lines"]
+        ]
         scaled_layout_data["font_size"] = layout_data["font_size"] * factor
         scaled_layout_data["line_height"] = layout_data["line_height"] * factor
         scaled_layout_data["max_line_width"] = layout_data["max_line_width"] * factor
+        if layout_data.get("block_height") is not None:
+            scaled_layout_data["block_height"] = layout_data["block_height"] * factor
 
-        # Scale line widths
+        # Scale line widths and vertical glyph measurements
         for line_data in scaled_layout_data["lines"]:
-            line_data["width"] = line_data["width"] * factor
+            for key in (
+                "width",
+                "height",
+                "advance_height",
+                "baseline_offset_y",
+                "left",
+                "right",
+                "top",
+                "bottom",
+                "origin_y",
+            ):
+                if key in line_data:
+                    line_data[key] = line_data[key] * factor
             if "center_x" in line_data:
                 line_data["center_x"] = (line_data["center_x"] - crop_x1) * factor
             if "target_width" in line_data:

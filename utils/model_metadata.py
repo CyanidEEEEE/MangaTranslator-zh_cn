@@ -91,6 +91,24 @@ def is_gpt5_chat_variant(model_name: Optional[str]) -> bool:
     return is_gpt5_series(model_name) and "chat" in (model_name or "").lower()
 
 
+def is_openai_model_family(model_name: Optional[str]) -> bool:
+    """Check if a model name is OpenAI-family, including OpenRouter-prefixed IDs."""
+    if not model_name:
+        return False
+    lm = model_name.lower()
+    return (
+        "openai/" in lm
+        or lm.startswith("gpt-")
+        or lm.startswith("o1")
+        or lm.startswith("o3")
+        or lm.startswith("o4-mini")
+        or "/gpt-" in lm
+        or "/o1" in lm
+        or "/o3" in lm
+        or "/o4-mini" in lm
+    )
+
+
 def is_gpt5_pro(model_name: Optional[str]) -> bool:
     """Check if a GPT-5 model is a pro variant."""
     return is_gpt5_series(model_name) and "-pro" in (model_name or "").lower()

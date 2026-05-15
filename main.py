@@ -407,11 +407,16 @@ def main():
         dest="detach_trailing_ellipsis",
         action="store_false",
         help=(
-            "Disable detaching trailing ellipsis onto a new line for better wrapping. "
+            "Disable detaching trailing ellipsis/punctuation clusters onto a new line. "
             "When disabled, trailing '...' stays glued to the preceding word."
         ),
     )
     parser.set_defaults(detach_trailing_ellipsis=True)
+    parser.add_argument(
+        "--auto-vertical-text",
+        action="store_true",
+        help="Automatically use vertical layout for short text in tall speech bubbles.",
+    )
     # Output args
     parser.add_argument(
         "--jpeg-quality",
@@ -603,6 +608,13 @@ def main():
     )
     parser.set_defaults(osb_flux_luminance_correction=True)
     parser.add_argument(
+        "--osb-no-flux-upscale-small-crops",
+        dest="osb_flux_upscale_small_crops",
+        action="store_false",
+        help="Disable Flux Klein small crop upscaling; large crops are still capped to 4MP.",
+    )
+    parser.set_defaults(osb_flux_upscale_small_crops=True)
+    parser.add_argument(
         "--osb-flux-residual-threshold",
         type=float,
         default=0.15,
@@ -721,6 +733,18 @@ def main():
         type=int,
         default=1024,
         help="Target maximum side length for full page image",
+    )
+    parser.add_argument(
+        "--batch-previous-context-image-count",
+        type=int,
+        default=0,
+        help="Number of previous page images to include as batch translation context (0-10)",
+    )
+    parser.add_argument(
+        "--batch-previous-context-text-count",
+        type=int,
+        default=3,
+        help="Number of previous page OCR transcript sets to include as batch translation context (0-10)",
     )
     parser.add_argument(
         "--osb-min-side-pixels",
@@ -931,6 +955,12 @@ def main():
             upscale_method=args.upscale_method,
             bubble_min_side_pixels=args.bubble_min_side_pixels,
             context_image_max_side_pixels=args.context_image_max_side_pixels,
+            previous_context_image_count=max(
+                0, min(10, int(args.batch_previous_context_image_count))
+            ),
+            previous_context_text_count=max(
+                0, min(10, int(args.batch_previous_context_text_count))
+            ),
             osb_min_side_pixels=args.osb_min_side_pixels,
             special_instructions=args.special_instructions,
             ocr_method=args.ocr_method,
@@ -950,6 +980,8 @@ def main():
             padding_pixels=args.padding_pixels,
             supersampling_factor=args.supersampling_factor,
             detach_trailing_ellipsis=args.detach_trailing_ellipsis,
+            detach_trailing_punctuation=args.detach_trailing_ellipsis,
+            auto_vertical_text=args.auto_vertical_text,
         ),
         output=OutputConfig(
             output_format=args.output_format,
@@ -969,6 +1001,7 @@ def main():
             flux_low_vram=args.osb_flux_low_vram,
             flux_num_inference_steps=args.osb_flux_steps,
             flux_luminance_correction=args.osb_flux_luminance_correction,
+            flux_upscale_small_crops=args.osb_flux_upscale_small_crops,
             flux_residual_diff_threshold=args.osb_flux_residual_threshold,
             osb_confidence=args.osb_confidence,
             seed=args.osb_seed,

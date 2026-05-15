@@ -435,6 +435,7 @@ def process_outside_text(
                     num_inference_steps=config.outside_text.flux_num_inference_steps,
                     low_vram=config.outside_text.flux_low_vram,
                     luminance_correction=config.outside_text.flux_luminance_correction,
+                    upscale_small_crops=config.outside_text.flux_upscale_small_crops,
                     verbose=verbose,
                 )
                 log_message("Using Flux.2 Klein 9B for inpainting", verbose=verbose)
@@ -453,6 +454,7 @@ def process_outside_text(
                     num_inference_steps=config.outside_text.flux_num_inference_steps,
                     low_vram=config.outside_text.flux_low_vram,
                     luminance_correction=config.outside_text.flux_luminance_correction,
+                    upscale_small_crops=config.outside_text.flux_upscale_small_crops,
                     verbose=verbose,
                 )
                 log_message("Using Flux.2 Klein 4B for inpainting", verbose=verbose)

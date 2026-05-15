@@ -96,6 +96,8 @@ class UIRenderingSettings:
     padding_pixels: float = 5.0
     supersampling_factor: int = 4
     detach_trailing_ellipsis: bool = True
+    detach_trailing_punctuation: bool = True
+    auto_vertical_text: bool = False
 
 
 @dataclass
@@ -129,6 +131,8 @@ class UIOutsideTextSettings:
     flux_luminance_correction: bool = (
         True  # Match patch luminance to surrounding context
     )
+    flux_upscale_small_crops: bool = True
+    flux_group_regions: bool = False
     flux_residual_diff_threshold: float = 0.15
     osb_confidence: float = 0.6
     osb_font_dir: str = ""  # Empty = use main font
@@ -203,6 +207,8 @@ class UIConfigState:
     batch_font_pack: Optional[str] = None
     batch_special_instructions: Optional[str] = None
     batch_parallel_requests: int = 1
+    batch_previous_context_image_count: int = 0
+    batch_previous_context_text_count: int = 3
     batch_bubble_detector_model: str = "yolo_1"
     batch_padding_pixels: float = 5.0
     batch_outside_text_enabled: bool = False
@@ -264,6 +270,8 @@ class UIConfigState:
             "padding_pixels": self.rendering.padding_pixels,
             "supersampling_factor": self.rendering.supersampling_factor,
             "detach_trailing_ellipsis": self.rendering.detach_trailing_ellipsis,
+            "detach_trailing_punctuation": self.rendering.detach_trailing_punctuation,
+            "auto_vertical_text": self.rendering.auto_vertical_text,
             "outside_text_enabled": self.outside_text.enabled,
             "outside_text_seed": self.outside_text.seed,
             "outside_text_huggingface_token": self.outside_text.huggingface_token,
@@ -272,6 +280,8 @@ class UIConfigState:
             "outside_text_flux_low_vram": self.outside_text.flux_low_vram,
             "outside_text_flux_num_inference_steps": self.outside_text.flux_num_inference_steps,
             "outside_text_flux_luminance_correction": self.outside_text.flux_luminance_correction,
+            "outside_text_flux_upscale_small_crops": self.outside_text.flux_upscale_small_crops,
+            "outside_text_flux_group_regions": self.outside_text.flux_group_regions,
             "outside_text_flux_residual_diff_threshold": self.outside_text.flux_residual_diff_threshold,
             "outside_text_osb_confidence": self.outside_text.osb_confidence,
             "outside_text_enable_page_number_filtering": self.outside_text.enable_page_number_filtering,
@@ -318,6 +328,15 @@ class UIConfigState:
             "batch_font_pack": self.batch_font_pack,
             "batch_special_instructions": self.batch_special_instructions or "",
             "batch_parallel_requests": self.batch_parallel_requests,
+            "batch_previous_context_image_count": (
+                self.batch_previous_context_image_count
+                if (
+                    self.llm_settings.send_full_page_context
+                    and self.llm_settings.ocr_method == "LLM"
+                )
+                else 0
+            ),
+            "batch_previous_context_text_count": self.batch_previous_context_text_count,
             "batch_bubble_detector_model": self.batch_bubble_detector_model,
             "batch_padding_pixels": self.batch_padding_pixels,
             "batch_outside_text_enabled": self.batch_outside_text_enabled,
@@ -335,6 +354,13 @@ class UIConfigState:
 
         defaults = settings_manager.DEFAULT_SETTINGS.copy()
         defaults.update(settings_manager.DEFAULT_BATCH_SETTINGS)
+        detach_trailing_punctuation = data.get(
+            "detach_trailing_punctuation",
+            data.get(
+                "detach_trailing_ellipsis",
+                defaults.get("detach_trailing_punctuation", True),
+            ),
+        )
 
         return UIConfigState(
             detection=UIDetectionSettings(
@@ -408,6 +434,14 @@ class UIConfigState:
                 ),
                 flux_luminance_correction=data.get(
                     "outside_text_flux_luminance_correction", True
+                ),
+                flux_upscale_small_crops=data.get(
+                    "outside_text_flux_upscale_small_crops",
+                    defaults.get("outside_text_flux_upscale_small_crops", True),
+                ),
+                flux_group_regions=data.get(
+                    "outside_text_flux_group_regions",
+                    defaults.get("outside_text_flux_group_regions", False),
                 ),
                 flux_residual_diff_threshold=data.get(
                     "outside_text_flux_residual_diff_threshold", 0.15
@@ -529,7 +563,12 @@ class UIConfigState:
                 ),
                 detach_trailing_ellipsis=data.get(
                     "detach_trailing_ellipsis",
-                    defaults.get("detach_trailing_ellipsis", True),
+                    detach_trailing_punctuation,
+                ),
+                detach_trailing_punctuation=detach_trailing_punctuation,
+                auto_vertical_text=data.get(
+                    "auto_vertical_text",
+                    defaults.get("auto_vertical_text", False),
                 ),
             ),
             output=UIOutputSettings(
@@ -599,6 +638,12 @@ class UIConfigState:
             batch_font_pack=data.get("batch_font_pack"),
             batch_special_instructions=data.get("batch_special_instructions") or None,
             batch_parallel_requests=int(data.get("batch_parallel_requests", 1)),
+            batch_previous_context_image_count=int(
+                data.get("batch_previous_context_image_count", 0)
+            ),
+            batch_previous_context_text_count=int(
+                data.get("batch_previous_context_text_count", 3)
+            ),
             batch_bubble_detector_model=data.get(
                 "batch_bubble_detector_model",
                 data.get(
@@ -696,6 +741,18 @@ def map_ui_to_backend_config(
         upscale_method=ui_state.llm_settings.upscale_method,
         bubble_min_side_pixels=ui_state.llm_settings.bubble_min_side_pixels,
         context_image_max_side_pixels=ui_state.llm_settings.context_image_max_side_pixels,
+        previous_context_image_count=(
+            ui_state.batch_previous_context_image_count
+            if (
+                is_batch
+                and ui_state.llm_settings.send_full_page_context
+                and ui_state.llm_settings.ocr_method == "LLM"
+            )
+            else 0
+        ),
+        previous_context_text_count=(
+            ui_state.batch_previous_context_text_count if is_batch else 0
+        ),
         osb_min_side_pixels=ui_state.llm_settings.osb_min_side_pixels,
         special_instructions=ui_state.llm_settings.special_instructions,
         reasoning_effort=ui_state.general.reasoning_effort,
@@ -719,6 +776,8 @@ def map_ui_to_backend_config(
         padding_pixels=ui_state.rendering.padding_pixels,
         supersampling_factor=ui_state.rendering.supersampling_factor,
         detach_trailing_ellipsis=ui_state.rendering.detach_trailing_ellipsis,
+        detach_trailing_punctuation=ui_state.rendering.detach_trailing_punctuation,
+        auto_vertical_text=ui_state.rendering.auto_vertical_text,
     )
 
     upscale_mode = ui_state.output.image_upscale_mode
@@ -753,6 +812,8 @@ def map_ui_to_backend_config(
         flux_low_vram=ui_state.outside_text.flux_low_vram,
         flux_num_inference_steps=ui_state.outside_text.flux_num_inference_steps,
         flux_luminance_correction=ui_state.outside_text.flux_luminance_correction,
+        flux_upscale_small_crops=ui_state.outside_text.flux_upscale_small_crops,
+        flux_group_regions=ui_state.outside_text.flux_group_regions,
         flux_residual_diff_threshold=ui_state.outside_text.flux_residual_diff_threshold,
         osb_confidence=ui_state.outside_text.osb_confidence,
         osb_font_dir=str(osb_font_path) if osb_font_path else None,

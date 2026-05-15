@@ -38,6 +38,40 @@ JUNCTION_ADJACENCY_MARGIN = 10  # Px margin around bbox intersection for junctio
 JUNCTION_MIN_SHRINK = 1.0  # Minimal shrink applied inside junction zones
 
 
+def _should_attempt_flux_colored_bubble_inpainting(
+    inpaint_method: str,
+    kontext_backend: str,
+    flux_hf_token: str,
+    verbose: bool = False,
+) -> bool:
+    """Decide whether colored bubble Flux inpainting should be attempted."""
+    method = (inpaint_method or "").lower()
+    backend = (kontext_backend or "").lower()
+
+    if method in ("", "opencv", "none"):
+        return False
+
+    # Klein and Kontext SDNQ can load from public repos or an existing local cache.
+    if method in ("flux_klein_9b", "flux_klein_4b"):
+        return True
+    if method == "flux_kontext" and backend == "sdnq":
+        return True
+
+    if flux_hf_token:
+        return True
+
+    try:
+        from core.ml.model_manager import get_model_manager
+
+        return get_model_manager().has_local_flux_inpainting_model(method, backend)
+    except Exception as e:
+        log_message(
+            f"Warning: failed to check local Flux cache: {e}",
+            verbose=verbose,
+        )
+        return False
+
+
 def _normalize_mask(mask: np.ndarray) -> np.ndarray:
     """
     Ensure mask is uint8 binary (0/255).
@@ -488,6 +522,7 @@ def clean_speech_bubbles(
     kontext_backend: str = "nunchaku",
     flux_low_vram: bool = False,
     flux_luminance_correction: bool = True,
+    flux_upscale_small_crops: bool = True,
     bubble_detector_model: str = "yolo_1",
     text_segmentation_prob_map: Optional[np.ndarray] = None,
 ):
@@ -808,7 +843,13 @@ def clean_speech_bubbles(
             colored_bubbles = [
                 b for b in processed_bubbles if b.get("is_colored", False)
             ]
-            if colored_bubbles and flux_hf_token:
+            should_attempt_flux = _should_attempt_flux_colored_bubble_inpainting(
+                inpaint_method,
+                kontext_backend,
+                flux_hf_token,
+                verbose=verbose,
+            )
+            if colored_bubbles and should_attempt_flux:
                 log_message(
                     f"Inpainting {len(colored_bubbles)} colored bubbles with Flux",
                     always_print=True,
@@ -831,6 +872,7 @@ def clean_speech_bubbles(
                             num_inference_steps=int(flux_num_inference_steps),
                             low_vram=flux_low_vram,
                             luminance_correction=flux_luminance_correction,
+                            upscale_small_crops=flux_upscale_small_crops,
                             verbose=verbose,
                         )
                     elif inpaint_method == "flux_klein_4b":
@@ -841,6 +883,7 @@ def clean_speech_bubbles(
                             num_inference_steps=int(flux_num_inference_steps),
                             low_vram=flux_low_vram,
                             luminance_correction=flux_luminance_correction,
+                            upscale_small_crops=flux_upscale_small_crops,
                             verbose=verbose,
                         )
                     else:
@@ -927,7 +970,8 @@ def clean_speech_bubbles(
             elif colored_bubbles:
                 log_message(
                     "Colored bubbles detected but Flux inpainting skipped "
-                    "(missing Hugging Face token); falling back to standard fill",
+                    "(no usable local Flux cache or Hugging Face token); "
+                    "falling back to standard fill",
                     always_print=True,
                 )
 

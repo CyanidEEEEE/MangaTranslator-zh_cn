@@ -447,6 +447,40 @@ def create_layout(
                             label="并发请求数 (Parallel Requests)",
                             info="同时处理的图片数量。提高可加快速度，但消耗更多显存和网络资源。",
                         )
+                        batch_previous_context_image_count = gr.Slider(
+                            minimum=0,
+                            maximum=10,
+                            value=int(
+                                (
+                                    saved_settings.get(
+                                        "batch_previous_context_image_count", 0
+                                    )
+                                    if saved_settings.get(
+                                        "send_full_page_context", True
+                                    )
+                                    else 0
+                                )
+                            ),
+                            step=1,
+                            label="上一页上下文图像数",
+                            info="批量翻译时发送前面若干页的全页图像作为剧情上下文。仅 LLM OCR 且启用全页上下文时生效。",
+                            interactive=(
+                                saved_settings.get("send_full_page_context", True)
+                                and saved_settings.get("ocr_method", "LLM") == "LLM"
+                            ),
+                        )
+                        batch_previous_context_text_count = gr.Slider(
+                            minimum=0,
+                            maximum=50,
+                            value=int(
+                                saved_settings.get(
+                                    "batch_previous_context_text_count", 3
+                                )
+                            ),
+                            step=1,
+                            label="上一页 OCR 文本数",
+                            info="批量翻译时发送前面若干页的 OCR 文本记录作为剧情上下文。可在并发时等待必要前页文本。",
+                        )
                         batch_workflow_mode = gr.Radio(
                             choices=[
                                 "标准模式 (逐页处理)",
@@ -1225,9 +1259,14 @@ def create_layout(
                             )
                             gr.Markdown("### Text Layout")
                             detach_trailing_ellipsis = gr.Checkbox(
-                                value=lambda k="detach_trailing_ellipsis", d=True: settings_manager.get_saved_settings().get(k, d),
-                                label="分离句尾省略号 (...)",
-                                info="将句尾的省略号移至新行，以改善文本排版换行。",
+                                value=lambda k="detach_trailing_punctuation", d=True: settings_manager.get_saved_settings().get(k, settings_manager.get_saved_settings().get("detach_trailing_ellipsis", d)),
+                                label="分离句尾标点",
+                                info="将句尾省略号、问号、感叹号等标点簇移至新行，以改善文本排版换行。",
+                            )
+                            auto_vertical_text = gr.Checkbox(
+                                value=lambda k="auto_vertical_text", d=False: settings_manager.get_saved_settings().get(k, d),
+                                label="高气泡自动竖排",
+                                info="在细长气泡中自动尝试竖排；手动脚本 direction:vertical 仍优先采用。",
                             )
                             hyphenate_before_scaling = gr.Checkbox(
                                 value=lambda k="hyphenate_before_scaling", d=True: settings_manager.get_saved_settings().get(k, d),
@@ -1424,6 +1463,33 @@ def create_layout(
                                     label="亮度校正 (Luminance Correction)",
                                     info="尝试使涂白生成的补丁亮度匹配周围的自然环境。",
                                     visible=_is_klein_for_lum,
+                                    interactive=(
+                                        _is_klein_for_lum
+                                        and saved_settings.get(
+                                            "outside_text_flux_upscale_small_crops",
+                                            True,
+                                        )
+                                        and not saved_settings.get(
+                                            "outside_text_flux_group_regions",
+                                            False,
+                                        )
+                                    ),
+                                )
+                                _is_flux_for_klein_options = saved_settings.get(
+                                    "outside_text_inpainting_method",
+                                    "flux_klein_4b",
+                                ) not in ("opencv", "none")
+                                outside_text_flux_upscale_small_crops = gr.Checkbox(
+                                    value=lambda k="outside_text_flux_upscale_small_crops", d=True: settings_manager.get_saved_settings().get(k, d),
+                                    label="Klein 小裁剪放大到约 1MP",
+                                    info="小区域送入 Flux Klein 前先放大以提升清理质量。关闭后仅会在超过 4MP 时缩小。",
+                                    visible=_is_flux_for_klein_options,
+                                    interactive=_is_klein_for_lum,
+                                )
+                                outside_text_flux_group_regions = gr.State(
+                                    value=saved_settings.get(
+                                        "outside_text_flux_group_regions", False
+                                    )
                                 )
                                 outside_text_flux_residual_diff_threshold = gr.Slider(
                                     0.0,
@@ -1733,6 +1799,7 @@ def create_layout(
             osb_min_side_pixels,
             hyphenate_before_scaling,
             detach_trailing_ellipsis,
+            auto_vertical_text,
             special_instructions,
             batch_special_instructions,
             hyphen_penalty,
@@ -1747,6 +1814,8 @@ def create_layout(
             outside_text_flux_low_vram,
             outside_text_flux_num_inference_steps,
             outside_text_flux_luminance_correction,
+            outside_text_flux_upscale_small_crops,
+            outside_text_flux_group_regions,
             outside_text_flux_residual_diff_threshold,
             outside_text_osb_confidence,
             outside_text_enable_page_number_filtering,
@@ -1771,6 +1840,9 @@ def create_layout(
             image_upscale_factor,
             image_upscale_model,
             auto_scale,
+            batch_parallel_requests,
+            batch_previous_context_image_count,
+            batch_previous_context_text_count,
             batch_bubble_detector_model,
             batch_padding_pixels,
             batch_outside_text_enabled,
@@ -1847,6 +1919,7 @@ def create_layout(
             osb_min_side_pixels,
             hyphenate_before_scaling,
             detach_trailing_ellipsis,
+            auto_vertical_text,
             special_instructions,
             batch_special_instructions,
             outside_text_enabled,
@@ -1856,6 +1929,8 @@ def create_layout(
             outside_text_flux_low_vram,
             outside_text_flux_num_inference_steps,
             outside_text_flux_luminance_correction,
+            outside_text_flux_upscale_small_crops,
+            outside_text_flux_group_regions,
             outside_text_flux_residual_diff_threshold,
             outside_text_osb_confidence,
             outside_text_enable_page_number_filtering,
@@ -1884,6 +1959,8 @@ def create_layout(
             batch_bubble_detector_model,
             batch_padding_pixels,
             batch_outside_text_enabled,
+            batch_previous_context_image_count,
+            batch_previous_context_text_count,
         ]
 
         translate_inputs = [
@@ -1953,6 +2030,7 @@ def create_layout(
             osb_min_side_pixels,
             hyphenate_before_scaling,
             detach_trailing_ellipsis,
+            auto_vertical_text,
             hyphen_penalty,
             hyphenation_min_word_length,
             badness_exponent,
@@ -1965,6 +2043,8 @@ def create_layout(
             outside_text_flux_low_vram,
             outside_text_flux_num_inference_steps,
             outside_text_flux_luminance_correction,
+            outside_text_flux_upscale_small_crops,
+            outside_text_flux_group_regions,
             outside_text_flux_residual_diff_threshold,
             outside_text_osb_confidence,
             outside_text_enable_page_number_filtering,
@@ -1996,6 +2076,8 @@ def create_layout(
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
+            batch_previous_context_image_count,
+            batch_previous_context_text_count,
             batch_bubble_detector_model,
             batch_padding_pixels,
             batch_outside_text_enabled,
@@ -2069,6 +2151,7 @@ def create_layout(
             osb_min_side_pixels,
             hyphenate_before_scaling,
             detach_trailing_ellipsis,
+            auto_vertical_text,
             hyphen_penalty,
             hyphenation_min_word_length,
             badness_exponent,
@@ -2081,6 +2164,8 @@ def create_layout(
             outside_text_flux_low_vram,
             outside_text_flux_num_inference_steps,
             outside_text_flux_luminance_correction,
+            outside_text_flux_upscale_small_crops,
+            outside_text_flux_group_regions,
             outside_text_flux_residual_diff_threshold,
             outside_text_osb_confidence,
             outside_text_enable_page_number_filtering,
@@ -2112,6 +2197,8 @@ def create_layout(
             special_instructions,
             batch_special_instructions,
             batch_parallel_requests,
+            batch_previous_context_image_count,
+            batch_previous_context_text_count,
             batch_bubble_detector_model,
             batch_padding_pixels,
             batch_outside_text_enabled,
@@ -2342,7 +2429,10 @@ def create_layout(
 
         # Inpainting method change -> enable/disable controls and adjust steps range
         def _update_inpainting_controls(
-            method: str, current_backend: str, current_steps: int
+            method: str,
+            current_backend: str,
+            current_steps: int,
+            upscale_small_crops: bool,
         ):
             """Update controls based on inpainting method selection."""
             is_opencv = method == "opencv"
@@ -2350,6 +2440,7 @@ def create_layout(
             is_no_flux = is_opencv or is_none
             is_kontext = method == "flux_kontext"
             is_klein = method in ("flux_klein_9b", "flux_klein_4b")
+            is_flux_for_klein_options = not is_no_flux
 
             if is_kontext:
                 max_steps = 30
@@ -2360,6 +2451,7 @@ def create_layout(
 
             show_low_vram = is_klein or (is_kontext and current_backend == "sdnq")
             residual_interactive = is_kontext and current_backend == "nunchaku"
+            luminance_interactive = is_klein and bool(upscale_small_crops)
 
             return (
                 gr.update(visible=is_kontext),
@@ -2369,7 +2461,15 @@ def create_layout(
                     maximum=max_steps,
                     value=default_steps,
                 ),
-                gr.update(visible=is_klein),
+                gr.update(
+                    visible=is_klein,
+                    interactive=luminance_interactive,
+                    value=luminance_interactive,
+                ),
+                gr.update(
+                    visible=is_flux_for_klein_options,
+                    interactive=is_klein,
+                ),
                 gr.update(interactive=residual_interactive),
                 gr.update(interactive=(not is_no_flux)),
                 gr.update(interactive=(not is_no_flux)),
@@ -2381,16 +2481,30 @@ def create_layout(
                 outside_text_inpainting_method,
                 outside_text_kontext_backend,
                 outside_text_flux_num_inference_steps,
+                outside_text_flux_upscale_small_crops,
             ],
             outputs=[
                 outside_text_kontext_backend,
                 outside_text_flux_low_vram,
                 outside_text_flux_num_inference_steps,
                 outside_text_flux_luminance_correction,
+                outside_text_flux_upscale_small_crops,
                 outside_text_flux_residual_diff_threshold,
                 outside_text_seed,
                 inpaint_colored_bubbles,
             ],
+            queue=False,
+        )
+
+        def _update_luminance_interactivity(upscale_small_crops: bool, method: str):
+            is_klein = method in ("flux_klein_9b", "flux_klein_4b")
+            interactive = is_klein and bool(upscale_small_crops)
+            return gr.update(interactive=interactive, value=interactive)
+
+        outside_text_flux_upscale_small_crops.change(
+            fn=_update_luminance_interactivity,
+            inputs=[outside_text_flux_upscale_small_crops, outside_text_inpainting_method],
+            outputs=outside_text_flux_luminance_correction,
             queue=False,
         )
 
@@ -2494,6 +2608,7 @@ def create_layout(
                 batch_input_language,
                 batch_original_language_state,
                 send_full_page_context,
+                batch_previous_context_image_count,
                 whiteout_conjoined_bubbles,
                 enable_code_execution_checkbox,
                 media_resolution_dropdown,
@@ -2502,6 +2617,17 @@ def create_layout(
                 config_model_name,
                 provider_state,
             ],
+            queue=False,
+        )
+
+        send_full_page_context.change(
+            fn=lambda enabled: (
+                gr.update(interactive=True)
+                if enabled
+                else gr.update(value=0, interactive=False)
+            ),
+            inputs=send_full_page_context,
+            outputs=batch_previous_context_image_count,
             queue=False,
         )
 

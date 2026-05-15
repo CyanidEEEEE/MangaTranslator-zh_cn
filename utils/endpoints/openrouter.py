@@ -122,6 +122,7 @@ def call_openrouter_endpoint(
 
     messages = []
     user_content = []
+    image_detail = generation_config.get("image_detail")
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     for part in image_parts:
@@ -132,12 +133,10 @@ def call_openrouter_endpoint(
         ):
             mime_type = part["inline_data"]["mime_type"]
             base64_image = part["inline_data"]["data"]
-            user_content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{base64_image}"},
-                }
-            )
+            image_url = {"url": f"data:{mime_type};base64,{base64_image}"}
+            if image_detail:
+                image_url["detail"] = image_detail
+            user_content.append({"type": "image_url", "image_url": image_url})
         else:
             log_message(f"Invalid image part format: {part}", always_print=True)
     user_content.append({"type": "text", "text": text_part["text"]})

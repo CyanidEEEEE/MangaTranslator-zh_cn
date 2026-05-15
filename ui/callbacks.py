@@ -134,6 +134,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         osb_min_side_pixels_val,
         hyphenate_before_scaling_val,
         detach_trailing_ellipsis_val,
+        auto_vertical_text_val,
         hyphen_penalty_val,
         hyphenation_min_word_length_val,
         badness_exponent_val,
@@ -146,6 +147,8 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         outside_text_flux_low_vram_val,
         outside_text_flux_num_inference_steps_val,
         outside_text_flux_luminance_correction_val,
+        outside_text_flux_upscale_small_crops_val,
+        outside_text_flux_group_regions_val,
         outside_text_flux_residual_diff_threshold_val,
         outside_text_osb_confidence_val,
         outside_text_enable_page_number_filtering_val,
@@ -177,6 +180,8 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         special_instructions_val,
         batch_special_instructions_val,
         batch_parallel_requests_val,
+        batch_previous_context_image_count_val,
+        batch_previous_context_text_count_val,
         batch_bubble_detector_model_val,
         batch_padding_pixels_val,
         batch_outside_text_enabled_val,
@@ -229,6 +234,8 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             flux_low_vram=outside_text_flux_low_vram_val,
             flux_num_inference_steps=int(outside_text_flux_num_inference_steps_val),
             flux_luminance_correction=outside_text_flux_luminance_correction_val,
+            flux_upscale_small_crops=outside_text_flux_upscale_small_crops_val,
+            flux_group_regions=outside_text_flux_group_regions_val,
             flux_residual_diff_threshold=float(
                 outside_text_flux_residual_diff_threshold_val
             ),
@@ -303,6 +310,8 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             pure_black_text=pure_black_text,
             hyphenate_before_scaling=hyphenate_before_scaling_val,
             detach_trailing_ellipsis=detach_trailing_ellipsis_val,
+            detach_trailing_punctuation=detach_trailing_ellipsis_val,
+            auto_vertical_text=auto_vertical_text_val,
             hyphen_penalty=hyphen_penalty_val,
             hyphenation_min_word_length=hyphenation_min_word_length_val,
             badness_exponent=badness_exponent_val,
@@ -341,6 +350,8 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         batch_font_pack=batch_font_dropdown,
         batch_outside_text_osb_font_pack=batch_outside_text_osb_font_pack_val,
         batch_parallel_requests=int(batch_parallel_requests_val),
+        batch_previous_context_image_count=int(batch_previous_context_image_count_val),
+        batch_previous_context_text_count=int(batch_previous_context_text_count_val),
         batch_bubble_detector_model=batch_bubble_detector_model_val,
         batch_padding_pixels=float(batch_padding_pixels_val),
         batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
@@ -1002,6 +1013,7 @@ def handle_save_config_click(*args: Any) -> str:
         osb_min_side_pixels_val,
         hyphenate_before_scaling_val,
         detach_trailing_ellipsis_val,
+        auto_vertical_text_val,
         special_instructions_val,
         batch_special_instructions_val,
         hyphen_penalty_val,
@@ -1016,6 +1028,8 @@ def handle_save_config_click(*args: Any) -> str:
         outside_text_flux_low_vram_val,
         outside_text_flux_num_inference_steps_val,
         outside_text_flux_luminance_correction_val,
+        outside_text_flux_upscale_small_crops_val,
+        outside_text_flux_group_regions_val,
         outside_text_flux_residual_diff_threshold_val,
         outside_text_osb_confidence_val,
         outside_text_enable_page_number_filtering_val,
@@ -1040,6 +1054,9 @@ def handle_save_config_click(*args: Any) -> str:
         image_upscale_factor_val,
         image_upscale_model_val,
         auto_scale_val,
+        batch_parallel_requests_val,
+        batch_previous_context_image_count_val,
+        batch_previous_context_text_count_val,
         batch_bubble_detector_model_val,
         batch_padding_pixels_val,
         batch_outside_text_enabled_val,
@@ -1070,6 +1087,8 @@ def handle_save_config_click(*args: Any) -> str:
             flux_low_vram=outside_text_flux_low_vram_val,
             flux_num_inference_steps=int(outside_text_flux_num_inference_steps_val),
             flux_luminance_correction=outside_text_flux_luminance_correction_val,
+            flux_upscale_small_crops=outside_text_flux_upscale_small_crops_val,
+            flux_group_regions=outside_text_flux_group_regions_val,
             flux_residual_diff_threshold=float(
                 outside_text_flux_residual_diff_threshold_val
             ),
@@ -1144,6 +1163,8 @@ def handle_save_config_click(*args: Any) -> str:
             pure_black_text=pure_black_text_val,
             hyphenate_before_scaling=hyphenate_before_scaling_val,
             detach_trailing_ellipsis=detach_trailing_ellipsis_val,
+            detach_trailing_punctuation=detach_trailing_ellipsis_val,
+            auto_vertical_text=auto_vertical_text_val,
             hyphen_penalty=hyphen_penalty_val,
             hyphenation_min_word_length=hyphenation_min_word_length_val,
             badness_exponent=badness_exponent_val,
@@ -1182,6 +1203,9 @@ def handle_save_config_click(*args: Any) -> str:
         batch_font_pack=b_font,
         batch_outside_text_osb_font_pack=batch_outside_text_osb_font_pack_val,
         batch_special_instructions=batch_special_instructions_val,
+        batch_parallel_requests=int(batch_parallel_requests_val),
+        batch_previous_context_image_count=int(batch_previous_context_image_count_val),
+        batch_previous_context_text_count=int(batch_previous_context_text_count_val),
         batch_bubble_detector_model=batch_bubble_detector_model_val,
         batch_padding_pixels=float(batch_padding_pixels_val),
         batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
@@ -1404,6 +1428,7 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.llm_settings.osb_min_side_pixels,
         gr.update(value=default_ui_state.rendering.hyphenate_before_scaling),
         gr.update(value=default_ui_state.rendering.detach_trailing_ellipsis),
+        gr.update(value=default_ui_state.rendering.auto_vertical_text),
         default_ui_state.llm_settings.special_instructions or "",
         default_ui_state.batch_special_instructions or "",
         default_ui_state.outside_text.enabled,
@@ -1413,6 +1438,8 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.outside_text.flux_low_vram,
         default_ui_state.outside_text.flux_num_inference_steps,
         default_ui_state.outside_text.flux_luminance_correction,
+        default_ui_state.outside_text.flux_upscale_small_crops,
+        default_ui_state.outside_text.flux_group_regions,
         default_ui_state.outside_text.flux_residual_diff_threshold,
         default_ui_state.outside_text.osb_confidence,
         gr.update(value=default_ui_state.outside_text.enable_page_number_filtering),
@@ -1453,6 +1480,8 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         gr.update(value=default_ui_state.batch_bubble_detector_model),
         gr.update(value=default_ui_state.batch_padding_pixels),
         gr.update(value=default_ui_state.batch_outside_text_enabled),
+        default_ui_state.batch_previous_context_image_count,
+        default_ui_state.batch_previous_context_text_count,
     ]
 
 
@@ -1688,6 +1717,7 @@ def handle_ocr_method_change(
         updates.append(batch_saved_language)
 
         updates.append(gr.update(value=False, interactive=False))
+        updates.append(gr.update(value=0, interactive=False))
         updates.append(gr.update())
         updates.append(gr.update(value=False, interactive=False))
         updates.append(gr.update(interactive=False))
@@ -1767,6 +1797,19 @@ def handle_ocr_method_change(
         )
         updates.append(
             gr.update(value=restored_send_full_page_context, interactive=True)
+        )
+        restored_previous_context_count = saved_settings.get(
+            "batch_previous_context_image_count", 0
+        )
+        updates.append(
+            gr.update(
+                value=(
+                    restored_previous_context_count
+                    if restored_send_full_page_context
+                    else 0
+                ),
+                interactive=restored_send_full_page_context,
+            )
         )
         restored_whiteout = saved_settings.get("whiteout_conjoined_bubbles", True)
         updates.append(gr.update(value=restored_whiteout, interactive=True))

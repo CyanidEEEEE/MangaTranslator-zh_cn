@@ -861,6 +861,92 @@ class ModelManager:
         """
         self.flux_residual_diff_threshold = max(0.0, min(1.0, threshold))
 
+    def _get_cached_hf_snapshot(
+        self,
+        repo_id: str,
+        cache_dir: Optional[Path] = None,
+        required_file: Optional[str] = "model_index.json",
+    ) -> Optional[Path]:
+        """Return a local Hugging Face snapshot path when one is already cached."""
+        base_dir = Path(cache_dir) if cache_dir is not None else self.flux_cache_dir
+        repo_cache_dir = base_dir / f"models--{repo_id.replace('/', '--')}"
+        snapshots_dir = repo_cache_dir / "snapshots"
+
+        if snapshots_dir.exists():
+            snapshots = sorted(
+                (p for p in snapshots_dir.iterdir() if p.is_dir()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for snapshot in snapshots:
+                if required_file is None or (snapshot / required_file).exists():
+                    return snapshot
+
+        direct_candidates = (base_dir, base_dir / repo_id.split("/")[-1])
+        for candidate in direct_candidates:
+            if not candidate.exists():
+                continue
+            if required_file is None or (candidate / required_file).exists():
+                return candidate
+
+        return None
+
+    def has_local_flux_inpainting_model(
+        self,
+        inpaint_method: str,
+        kontext_backend: str = "sdnq",
+    ) -> bool:
+        """Check whether the selected Flux inpainting pipeline exists locally."""
+        method = (inpaint_method or "").lower()
+        backend = (kontext_backend or "").lower()
+        model_type = None
+
+        if method == "flux_klein_9b":
+            model_type = ModelType.FLUX_KLEIN_9B_PIPELINE
+        elif method == "flux_klein_4b":
+            model_type = ModelType.FLUX_KLEIN_4B_PIPELINE
+        elif method == "flux_kontext":
+            model_type = (
+                ModelType.FLUX_KONTEXT_SDNQ_PIPELINE
+                if backend == "sdnq"
+                else ModelType.FLUX_PIPELINE
+            )
+
+        if model_type is None:
+            return False
+
+        repo_id = self.model_hf_repos[model_type]["repo_id"]
+        return self._get_cached_hf_snapshot(repo_id) is not None
+
+    def _load_diffusers_pipeline_cache_first(
+        self,
+        pipeline_cls: Any,
+        repo_id: str,
+        verbose: bool = False,
+        **kwargs,
+    ):
+        """Load a Diffusers pipeline, preferring a local HF cache when present."""
+        cache_dir = Path(kwargs["cache_dir"]) if kwargs.get("cache_dir") else None
+        cached_snapshot = self._get_cached_hf_snapshot(repo_id, cache_dir=cache_dir)
+        if cached_snapshot is not None:
+            log_message(
+                f"Found local cached Flux pipeline for {repo_id}; loading from cache first.",
+                verbose=verbose,
+            )
+            try:
+                return pipeline_cls.from_pretrained(
+                    repo_id,
+                    local_files_only=True,
+                    **kwargs,
+                )
+            except Exception as e:
+                log_message(
+                    f"Local cached Flux pipeline load failed for {repo_id}; retrying via Hugging Face: {e}",
+                    verbose=verbose,
+                )
+
+        return pipeline_cls.from_pretrained(repo_id, **kwargs)
+
     def load_flux_models(self, verbose: bool = False):
         """Load all Flux Kontext inpainting models (transformer, text encoder, pipeline).
 
@@ -932,8 +1018,10 @@ class ModelManager:
                 effective_token = (
                     self.flux_hf_token if self.flux_hf_token else self.hf_token
                 )
-                pipeline = FluxKontextPipeline.from_pretrained(
+                pipeline = self._load_diffusers_pipeline_cache_first(
+                    FluxKontextPipeline,
                     pipeline_repo,
+                    verbose=verbose,
                     transformer=transformer,
                     text_encoder_2=text_encoder,
                     torch_dtype=self.dtype,
@@ -993,10 +1081,16 @@ class ModelManager:
                 repo_id = hf_info["repo_id"]
 
                 log_message(f"Loading SDNQ pipeline from {repo_id}...", verbose=verbose)
-                pipeline = FluxKontextPipeline.from_pretrained(
+                effective_token = (
+                    self.flux_hf_token if self.flux_hf_token else self.hf_token
+                )
+                pipeline = self._load_diffusers_pipeline_cache_first(
+                    FluxKontextPipeline,
                     repo_id,
+                    verbose=verbose,
                     torch_dtype=self.dtype,
                     cache_dir=str(self.flux_cache_dir),
+                    token=effective_token,
                 )
 
                 # Enable INT8 MatMul for GPU acceleration (AMD, Intel ARC, NVIDIA)
@@ -1076,10 +1170,16 @@ class ModelManager:
                 repo_id = hf_info["repo_id"]
 
                 log_message(f"Loading SDNQ pipeline from {repo_id}...", verbose=verbose)
-                pipeline = Flux2KleinPipeline.from_pretrained(
+                effective_token = (
+                    self.flux_hf_token if self.flux_hf_token else self.hf_token
+                )
+                pipeline = self._load_diffusers_pipeline_cache_first(
+                    Flux2KleinPipeline,
                     repo_id,
+                    verbose=verbose,
                     torch_dtype=self.dtype,
                     cache_dir=str(self.flux_cache_dir),
+                    token=effective_token,
                 )
 
                 # Enable INT8 MatMul for GPU acceleration (AMD, Intel ARC, NVIDIA)

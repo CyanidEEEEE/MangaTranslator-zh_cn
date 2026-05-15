@@ -88,6 +88,8 @@ class TranslationConfig:
     media_resolution_context: str = "auto"  # Gemini 3 and xAI models
     bubble_min_side_pixels: int = 128
     context_image_max_side_pixels: int = 1024
+    previous_context_image_count: int = 0
+    previous_context_text_count: int = 0
     osb_min_side_pixels: int = 128
     special_instructions: Optional[str] = None
     ocr_method: str = "LLM"  # "LLM", "manga-ocr", or "paddleocr-vl"
@@ -113,6 +115,8 @@ class RenderingConfig:
     outline_width: float = 0.0
     supersampling_factor: int = 4
     detach_trailing_ellipsis: bool = True
+    detach_trailing_punctuation: bool = True
+    auto_vertical_text: bool = False
 
 
 @dataclass
@@ -134,6 +138,8 @@ class OutsideTextConfig:
     flux_luminance_correction: bool = (
         True  # Match patch luminance to surrounding context
     )
+    flux_upscale_small_crops: bool = True
+    flux_group_regions: bool = False
     flux_residual_diff_threshold: float = 0.15
     osb_confidence: float = 0.6
     osb_font_dir: Optional[str] = None  # None = use main font as fallback
