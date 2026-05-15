@@ -241,6 +241,7 @@ DEFAULT_SETTINGS = {
 DEFAULT_BATCH_SETTINGS = {
     "batch_input_language": "Japanese",
     "batch_output_language": "English",
+    "batch_reading_direction": "rtl",
     "batch_font_pack": None,
     "batch_special_instructions": "",
     "batch_parallel_requests": 1,
@@ -370,6 +371,7 @@ CANONICAL_CONFIG_KEY_ORDER: List[str] = [
     # Batch
     "batch_input_language",
     "batch_output_language",
+    "batch_reading_direction",
     "batch_font_pack",
     "batch_parallel_requests",
     "batch_previous_context_image_count",

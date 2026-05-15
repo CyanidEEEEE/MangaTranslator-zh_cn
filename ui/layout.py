@@ -247,6 +247,10 @@ def create_layout(
             "batch_outside_text_enabled",
             saved_settings.get("outside_text_enabled", False),
         )
+        batch_default_reading_direction = saved_settings.get(
+            "batch_reading_direction",
+            saved_settings.get("reading_direction", "rtl"),
+        )
 
         initial_provider = saved_settings.get(
             "provider", settings_manager.DEFAULT_SETTINGS["provider"]
@@ -308,6 +312,13 @@ def create_layout(
                                 value=lambda k="bubble_detector_model", d="yolo_1": settings_manager.get_saved_settings().get(k, d),
                                 label="气泡检测模型",
                                 info="选择本次生成使用的主气泡检测模型。",
+                            )
+                            config_reading_direction = gr.Radio(
+                                choices=["rtl", "ltr"],
+                                label="阅读方向 (Reading Direction)",
+                                value=lambda k="reading_direction", d="rtl": settings_manager.get_saved_settings().get(k, d),
+                                info="气泡排序方向（rtl=日漫从右到左，ltr=美漫从左到右）。",
+                                elem_id="translator_reading_direction",
                             )
                             padding_pixels = gr.Slider(
                                 0,
@@ -400,6 +411,13 @@ def create_layout(
                                 value=batch_default_bubble_detector_model,
                                 label="气泡检测模型",
                                 info="选择本次批量生成使用的主气泡检测模型。",
+                            )
+                            batch_reading_direction = gr.Radio(
+                                choices=["rtl", "ltr"],
+                                label="阅读方向 (Reading Direction)",
+                                value=batch_default_reading_direction,
+                                info="批量气泡排序方向（rtl=日漫从右到左，ltr=美漫从左到右）。",
+                                elem_id="batch_reading_direction",
                             )
                             batch_padding_pixels = gr.Slider(
                                 0,
@@ -684,13 +702,6 @@ def create_layout(
                                 value=lambda k="use_osb_text_verification", d=True: settings_manager.get_saved_settings().get(k, d),
                                 label="使用 AnimeText 验证气泡",
                                 info=None,
-                            )
-                            config_reading_direction = gr.Radio(
-                                choices=["rtl", "ltr"],
-                                label="阅读方向 (Reading Direction)",
-                                value=lambda k="reading_direction", d="rtl": settings_manager.get_saved_settings().get(k, d),
-                                info="气泡排序方向（rtl=日漫从右到左，ltr=美漫从左到右）。",
-                                elem_id="config_reading_direction",
                             )
                         setting_groups.append(group_detection)
 
@@ -1844,6 +1855,7 @@ def create_layout(
             batch_previous_context_image_count,
             batch_previous_context_text_count,
             batch_bubble_detector_model,
+            batch_reading_direction,
             batch_padding_pixels,
             batch_outside_text_enabled,
         ]
@@ -1957,6 +1969,7 @@ def create_layout(
             auto_scale,
             batch_parallel_requests,
             batch_bubble_detector_model,
+            batch_reading_direction,
             batch_padding_pixels,
             batch_outside_text_enabled,
             batch_previous_context_image_count,
@@ -2079,6 +2092,7 @@ def create_layout(
             batch_previous_context_image_count,
             batch_previous_context_text_count,
             batch_bubble_detector_model,
+            batch_reading_direction,
             batch_padding_pixels,
             batch_outside_text_enabled,
         ]
@@ -2200,6 +2214,7 @@ def create_layout(
             batch_previous_context_image_count,
             batch_previous_context_text_count,
             batch_bubble_detector_model,
+            batch_reading_direction,
             batch_padding_pixels,
             batch_outside_text_enabled,
             batch_workflow_mode,

@@ -204,6 +204,7 @@ class UIConfigState:
     font_pack: Optional[str] = None
     batch_input_language: str = "Japanese"
     batch_output_language: str = "English"
+    batch_reading_direction: str = "rtl"
     batch_font_pack: Optional[str] = None
     batch_special_instructions: Optional[str] = None
     batch_parallel_requests: int = 1
@@ -325,6 +326,7 @@ class UIConfigState:
             "output_language": self.output_language,
             "batch_input_language": self.batch_input_language,
             "batch_output_language": self.batch_output_language,
+            "batch_reading_direction": self.batch_reading_direction,
             "batch_font_pack": self.batch_font_pack,
             "batch_special_instructions": self.batch_special_instructions or "",
             "batch_parallel_requests": self.batch_parallel_requests,
@@ -635,6 +637,10 @@ class UIConfigState:
             batch_output_language=data.get(
                 "batch_output_language", defaults["batch_output_language"]
             ),
+            batch_reading_direction=data.get(
+                "batch_reading_direction",
+                data.get("reading_direction", defaults["reading_direction"]),
+            ),
             batch_font_pack=data.get("batch_font_pack"),
             batch_special_instructions=data.get("batch_special_instructions") or None,
             batch_parallel_requests=int(data.get("batch_parallel_requests", 1)),
@@ -687,6 +693,11 @@ def map_ui_to_backend_config(
     output_lang = (
         ui_state.batch_output_language if is_batch else ui_state.output_language
     )
+    reading_direction = (
+        ui_state.batch_reading_direction
+        if is_batch
+        else ui_state.llm_settings.reading_direction
+    )
 
     detection_cfg = DetectionConfig(
         confidence=ui_state.detection.confidence,
@@ -727,7 +738,7 @@ def map_ui_to_backend_config(
         max_tokens=ui_state.llm_settings.max_tokens,
         input_language=input_lang,
         output_language=output_lang,
-        reading_direction=ui_state.llm_settings.reading_direction,
+        reading_direction=reading_direction,
         translation_mode=ui_state.llm_settings.translation_mode,
         ocr_method=ui_state.llm_settings.ocr_method,
         enable_web_search=ui_state.general.enable_web_search,

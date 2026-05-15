@@ -183,6 +183,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         batch_previous_context_image_count_val,
         batch_previous_context_text_count_val,
         batch_bubble_detector_model_val,
+        batch_reading_direction_val,
         batch_padding_pixels_val,
         batch_outside_text_enabled_val,
     ) = args
@@ -200,6 +201,9 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
     )
     final_bubble_detector_model = (
         batch_bubble_detector_model_val if is_batch else bubble_detector_model_val
+    )
+    final_reading_direction = (
+        batch_reading_direction_val if is_batch else config_reading_direction
     )
     final_padding_pixels = (
         batch_padding_pixels_val if is_batch else padding_pixels_val
@@ -289,7 +293,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
             top_p=top_p,
             top_k=top_k,
             max_tokens=max_tokens,
-            reading_direction=config_reading_direction,
+            reading_direction=final_reading_direction,
             translation_mode=config_translation_mode,
             ocr_method=ocr_method_val,
             send_full_page_context=send_full_page_context_val,
@@ -353,6 +357,7 @@ def _build_ui_state_from_args(args: tuple, is_batch: bool) -> UIConfigState:
         batch_previous_context_image_count=int(batch_previous_context_image_count_val),
         batch_previous_context_text_count=int(batch_previous_context_text_count_val),
         batch_bubble_detector_model=batch_bubble_detector_model_val,
+        batch_reading_direction=batch_reading_direction_val,
         batch_padding_pixels=float(batch_padding_pixels_val),
         batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
     )
@@ -1058,6 +1063,7 @@ def handle_save_config_click(*args: Any) -> str:
         batch_previous_context_image_count_val,
         batch_previous_context_text_count_val,
         batch_bubble_detector_model_val,
+        batch_reading_direction_val,
         batch_padding_pixels_val,
         batch_outside_text_enabled_val,
     ) = args
@@ -1207,6 +1213,7 @@ def handle_save_config_click(*args: Any) -> str:
         batch_previous_context_image_count=int(batch_previous_context_image_count_val),
         batch_previous_context_text_count=int(batch_previous_context_text_count_val),
         batch_bubble_detector_model=batch_bubble_detector_model_val,
+        batch_reading_direction=batch_reading_direction_val,
         batch_padding_pixels=float(batch_padding_pixels_val),
         batch_outside_text_enabled=bool(batch_outside_text_enabled_val),
     )
@@ -1478,6 +1485,7 @@ def handle_reset_defaults_click(fonts_base_dir: Path) -> List[gr.update]:
         default_ui_state.general.auto_scale,
         default_ui_state.batch_parallel_requests,
         gr.update(value=default_ui_state.batch_bubble_detector_model),
+        gr.update(value=default_ui_state.batch_reading_direction),
         gr.update(value=default_ui_state.batch_padding_pixels),
         gr.update(value=default_ui_state.batch_outside_text_enabled),
         default_ui_state.batch_previous_context_image_count,
